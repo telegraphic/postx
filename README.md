@@ -13,12 +13,12 @@ $$
 
 The *power beam* is the voltage beam after squaring and averaging in time. when averaged with time (denote with $\langle \rangle$ brackets) is:
 $$
-B  =\left\langle b(t)b^{H}(t)\right\rangle \ =\  \mathbf{w}_p \mathbf{V}_{pq} \mathbf{w}_q^H \ \equiv\  \mathbf{W}_{pq} \mathbf{V}_{pq}^H
+B  = \langle b(t)b^{H}(t) \rangle \ =\  \boldsymbol{w}_p \boldsymbol{V}_{pq} \boldsymbol{w}_q^H \ \equiv\  \boldsymbol{W}_{pq} \boldsymbol{V}_{pq}^H
 $$
 
-Where $\mathbf{V}$ is the $(P\times P)$ visibility matrix, $\mathbf{w}$ is a $(1\times P)$ weights vector. Equivalently, $\mathbf{W}$ is a  $(P\times P)$ weights matrix. The subscripts $p$ and $q$ are row/column indices representing antenna pairs in the matrix. 
+Where $\boldsymbol{V}$ is the $(P\times P)$ visibility matrix, $\boldsymbol{w}$ is a $(1\times P)$ weights vector. Equivalently, $\boldsymbol{W}$ is a  $(P\times P)$ weights matrix. The subscripts $p$ and $q$ are row/column indices representing antenna pairs in the matrix. 
 
-In terms of computations, the most efficient way to form a power beam, with order $O(P)$, is first form a voltage beam, square the output, then average. Forming the visibility matrix is an $O(P^2)$ operation, so post-correlation beamforming is much more computationally expensive. The weight matrix, $\mathbf{W}_{pq} = \mathbf{w}_{p} \mathbf{w}_{q}^H$, is conceptually useful (and useful for visualization), but comes at even more computational expense and memory requirements. 
+In terms of computations, the most efficient way to form a power beam, with order $O(P)$, is first form a voltage beam, square the output, then average. Forming the visibility matrix is an $O(P^2)$ operation, so post-correlation beamforming is much more computationally expensive. The weight matrix, $\boldsymbol{W}_{pq} = \boldsymbol{w}_{p} \boldsymbol{w}_{q}^H$, is conceptually useful (and useful for visualization), but comes at even more computational expense and memory requirements. 
 
 However, post-correlation beamforming is incredibly flexible: a user can form as many beams as they feel like, and can re-point the beam in any desired direction. Also, as interferometers natively output visbility matrices, post-correlation beamforming can be a useful approach if a real-time voltage beamformer does not exist.
 
@@ -53,7 +53,7 @@ $$
 
 1. Use $(l, m)$ direction cosines of the target from the phase center. Useful for making 2D images around the phase center. Remember $(l, m)$ are cartesian coordinates, not spherical.
 
-2. Use the hourangle and declination ($H$, $d$) of the target from the phase center. Useful for pointing at a Celestial source with known RA/DEC, or za/az. 
+2. Use the hourangle and declination $(H, d)$ of the target from the phase center. Useful for pointing at a Celestial source with known RA/DEC, or za/az. 
 
 In both instances, the geometric delay is found from the W-component:
 
@@ -79,7 +79,7 @@ $$
 
 This is where you are pointing.
 
-* Local za/az: zenith angle (0 to 90$^\circ$) and azimuthal angle (full 360 degrees). Also called horizontal coordinates.
+* Local za/az: zenith angle (0 to $90^\circ$) and azimuthal angle (full 360 degrees). Also called horizontal coordinates.
 
 * Celestial RA/DEC: Right ascension and declination, as measured from the North Celestial pole.
 
@@ -102,7 +102,7 @@ When projecting from 3D spherical to 2D, the two plane axes are called $l$ and $
 Which both range from (-1, 1). Note these are cartesian, not spherical coordinates! The phase center is at the origin (0, 0).  The pointing vector that corresponds to this is:
 
 $$
-\mathbf{s} = (l, m, \sqrt{1 - l^2 - m^2})
+\boldsymbol{s} = (l, m, \sqrt{1 - l^2 - m^2})
 $$
 
 
