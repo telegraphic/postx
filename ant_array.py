@@ -337,6 +337,33 @@ class RadioArray(AntArray):
                     self._point_vec(pvec)
                     grid[yy, xx] = np.abs(self.beamform())
         return grid
+
+    def _generate_weight_grid(self, n_pix):
+        l = np.linspace(1, -1, n_pix, dtype='float32')
+        m = np.linspace(1, -1, n_pix, dtype='float32')
+        lg, mg = np.meshgrid(l, m)
+        ng     = np.sqrt(1 - lg**2 - mg**2)
+
+        lmn = np.zeros((n_pix, n_pix, 3), dtype='float32')
+        lmn[:, :, 0] = lg
+        lmn[:, :, 1] = mg
+        lmn[:, :, 2] = ng
+
+        # i, j: pix idx
+        # d: direction cosine lmn, and baseline XYZ (dot product)
+        # p: antenna idx 
+        t_g = np.einsum('ijd,pd', lmn, self.xyz_local, optimize=True) / SPEED_OF_LIGHT
+
+        # geometric delay to phase weights
+        w = np.exp(1j * 2 * np.pi * self.f[self._f_idx] * t_g, dtype='complex64')
+        self._wg = w
+        self._wgc = np.conj(w)
+        return w
+
+    def make_image2(self, n_pix=128):
+        self._generate_weight_grid(n_pix)
+        B = np.einsum('ijp,pq,ijq->ij', self._wg, self.data, self._wgc, optimize=True)
+        return B.real
     
     def plot_image(self, img=None, n_pix=128):
         import pylab as plt
