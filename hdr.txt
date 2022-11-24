@@ -1,0 +1,38 @@
+SIMPLE  =                    T / file does conform to FITS standard             
+BITPIX  =                  -64 / number of bits per data pixel                  
+NAXIS   =                    4 / number of data axes                            
+NAXIS1  =                 1025 / length of data axis 1                          
+NAXIS2  =                 1025 / length of data axis 2                          
+NAXIS3  =                   50 / length of data axis 3                          
+NAXIS4  =                    1 / length of data axis 4                          
+EXTEND  =                    T / FITS dataset may contain extensions            
+COMMENT   FITS (Flexible Image Transport System) format is defined in 'Astronomy
+COMMENT   and Astrophysics', volume 376, page 359; bibcode: 2001A&A...376..359H 
+DATE    = '2019-09-16T22:33:00' / file creation date (YYYY-MM-DDThh:mm:ss UT)   
+TELESCOP= 'OSKAR 2.7.4-dev 2019-07-19 923f7be'                                  
+CTYPE1  = 'RA---SIN'           / Right Ascension                                
+CRVAL1  =     2.1664280000E+02                                                  
+CDELT1  =    -1.1179671389E-01                                                  
+CRPIX1  =     5.1300000000E+02                                                  
+CROTA1  =     0.0000000000E+00                                                  
+CTYPE2  = 'DEC--SIN'           / Declination                                    
+CRVAL2  =    -2.6707160000E+01                                                  
+CDELT2  =     1.1179671389E-01                                                  
+CRPIX2  =     5.1300000000E+02                                                  
+CROTA2  =     0.0000000000E+00                                                  
+CTYPE3  = 'FREQ    '           / Frequency                                      
+CRVAL3  =     5.0000000000E+07                                                  
+CDELT3  =     1.0000000000E+06                                                  
+CRPIX3  =     1.0000000000E+00                                                  
+CROTA3  =     0.0000000000E+00                                                  
+CTYPE4  = 'UTC     '           / Time                                           
+CRVAL4  =     4.4534016000E+09                                                  
+CDELT4  =     3.6000000000E+03                                                  
+CRPIX4  =     1.0000000000E+00                                                  
+CROTA4  =     0.0000000000E+00                                                  
+TIMESYS = 'UTC     '                                                            
+TIMEUNIT= 's       '           / Time axis units                                
+MJD-OBS =     5.1544000000E+04 / Start time                                     
+OBSRA   =     2.1664280000E+02 / RA                                             
+OBSDEC  =    -2.6707160000E+01 / DEC
+END

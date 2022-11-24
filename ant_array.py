@@ -200,6 +200,7 @@ class AntArray(ephem.Observer):
 class RadioArray(AntArray):
     def __init__(self, lat, long, elev, f_mhz, antxyz_h5, 
                  t0=None, phase_center=None, conjugate_data=False, verbose=False):
+        
         with h5py.File(antxyz_h5, 'r') as h:
             self.xyz_local     = h['xyz_local'][:]      # TODO: Is this East-North-Up?
             self.xyz_celestial = h['xyz_celestial'][:]   # TODO: Calculate instead?
