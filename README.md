@@ -12,13 +12,20 @@ b(t)=\sum_{p=1}^{P}w_{p}v_{p}(t)
 $$ 
 
 The *power beam* is the voltage beam after squaring and averaging in time. when averaged with time (denote with $\langle \rangle$ brackets) is:
+
 $$
 B  = \langle b(t)b^{H}(t) \rangle \ =\  \boldsymbol{w}_p \boldsymbol{V}_{pq} \boldsymbol{w}_q^H \ \equiv\  \boldsymbol{W}_{pq} \boldsymbol{V}_{pq}^H
 $$
 
 Where $\boldsymbol{V}$ is the $(P\times P)$ visibility matrix, $\boldsymbol{w}$ is a $(1\times P)$ weights vector. Equivalently, $\boldsymbol{W}$ is a  $(P\times P)$ weights matrix. The subscripts $p$ and $q$ are row/column indices representing antenna pairs in the matrix. 
 
-In terms of computations, the most efficient way to form a power beam, with order $O(P)$, is first form a voltage beam, square the output, then average. Forming the visibility matrix is an $O(P^2)$ operation, so post-correlation beamforming is much more computationally expensive. The weight matrix, $\boldsymbol{W}_{pq} = \boldsymbol{w}_{p} \boldsymbol{w}_{q}^H$, is conceptually useful (and useful for visualization), but comes at even more computational expense and memory requirements. 
+In terms of computations, the most efficient way to form a power beam, with order $O(P)$, is first form a voltage beam, square the output, then average. Forming the visibility matrix is an $O(P^2)$ operation, so post-correlation beamforming is much more computationally expensive. The weight matrix, 
+
+$$
+\boldsymbol{W}_{pq} = \boldsymbol{w}_{p} \boldsymbol{w}_{q}^H
+$$
+
+is conceptually useful (and useful for visualization), but comes at even more computational expense and memory requirements. 
 
 However, post-correlation beamforming is incredibly flexible: a user can form as many beams as they feel like, and can re-point the beam in any desired direction. Also, as interferometers natively output visbility matrices, post-correlation beamforming can be a useful approach if a real-time voltage beamformer does not exist.
 
@@ -71,7 +78,7 @@ $$
 
 * Local XYZ: Relative to the surface of the Earth, at the observatory site. Normally X=East, Y=North, Z=Up. That is: The Z-direction points toward zenith.
 
-* ECEF XYZ: Abstract coordinates relative to the center of the Earth. The Z direction points toward the the North celestial pole**. The X-axis is in the plane of the Equator and runs through $0^\circ$ and $180^\circ$ degrees. The Y-axis runs through $90^\circ$W to $90^\circ$E.
+* ECEF XYZ: Abstract coordinates relative to the center of the Earth. The Z direction points toward the the North celestial pole**. The X-axis is in the plane of the Equator and runs through $0^\circ$ and $180^\circ$ degrees. The Y-axis runs through $90^\circ$ W to $90^\circ$ E.
 
 ** It's actually the 'international reference pole (IRP)', which I'm not 100% sure is the same as the NCP.
 
@@ -79,7 +86,7 @@ $$
 
 This is where you are pointing.
 
-* Local za/az: zenith angle (0 to $90^\circ$) and azimuthal angle (full 360 degrees). Also called horizontal coordinates.
+* Local za/az: zenith angle (0 to $90^\circ$ ) and azimuthal angle (full 360 degrees). Also called horizontal coordinates.
 
 * Celestial RA/DEC: Right ascension and declination, as measured from the North Celestial pole.
 
