@@ -56,16 +56,20 @@ where $t$ is summation over time step (instead of using $\langle \rangle$ bracke
 In Python (Numpy and Cupy), there is a `einsum` command, which has slightly different syntax. The visibility matrix is compute via:
 
 ```python
+# v: voltage array with shape (N_ant, N_timesteps), complex dtype
+# V: visibility matrix with shape (N_ant, N_ant), complex dtype
 V = np.einsum('pt,qt->pq', v, v.conj(), optimize=True)
 ```
 
-where `v` has shape `(N_ant, N_timesteps)`. For a given frequency $\nu$, a beam matrix is formed via:
+For a given frequency $\nu$, a beam matrix is formed via:
 
 ```python
+# weights: weight array with shape (N_pix, N_pix, N_ant), complex dtype
+# V: visibility matrix with shape (N_ant, N_ant), complex dtype
 B = np.einsum('ijp,pq,ijq->ij', weights, V, weights.conj(), optimize=True)
 ```
 
-The `optimize=True` argument is key to good performance, by optimizing the contraction order can dispatch to BLAS packages ([see opt_einsum](https://optimized-einsum.readthedocs.io/en/stable/))
+Note that the `optimize=True` argument is key to good performance, by optimizing the contraction order can dispatch to BLAS packages ([see opt_einsum](https://optimized-einsum.readthedocs.io/en/stable/)).
 
 ## Calculating array weights
 
