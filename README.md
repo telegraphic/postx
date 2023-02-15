@@ -41,8 +41,35 @@ $$
 Summation here is implied over all indices that appear in an upper and lower index. So, we sum across indexes $p$ and $q$ (summation indices), and output an N-dimensional matrix with indices $(i, j, \nu)$. In slightly-less compact, but more efficient form:
 
 $$
-B_{i j \nu} = w_{i j p \nu} \, V^{p q}_{\nu} (w^H)_{i j q \nu}
+B_{i j \nu} = w_{i j p \nu} \, V^{p q}_{\nu} (w^H)_{i j q \nu} (1)
 $$
+
+The visibility matrix can itself be written in summation notation as
+
+$$
+V_{p q} = v^{t}_{p} (v^H)_{q t} 
+$$
+
+where $t$ is summation over time step (instead of using $\langle \rangle$ brackets).
+
+#### Numpy's `einsum`
+In Python (Numpy and Cupy), there is a `einsum` command, which has slightly different syntax. The visibility matrix is compute via:
+
+```python
+# v: voltage array with shape (N_ant, N_timesteps), complex dtype
+# V: visibility matrix with shape (N_ant, N_ant), complex dtype
+V = np.einsum('pt,qt->pq', v, v.conj(), optimize=True)
+```
+
+For a given frequency $\nu$, a beam matrix is formed via:
+
+```python
+# weights: weight array with shape (N_pix, N_pix, N_ant), complex dtype
+# V: visibility matrix with shape (N_ant, N_ant), complex dtype
+B = np.einsum('ijp,pq,ijq->ij', weights, V, weights.conj(), optimize=True)
+```
+
+Note that the `optimize=True` argument is key to good performance, by optimizing the contraction order can dispatch to BLAS packages ([see opt_einsum](https://optimized-einsum.readthedocs.io/en/stable/)).
 
 ## Calculating array weights
 
