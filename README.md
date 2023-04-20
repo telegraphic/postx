@@ -3,7 +3,7 @@
 This repository contains code to do post-correlation beamforming and imaging. It is designed for compact low-frequency arrays like the EDA2.
 
 <p align="center">
-<img src="https://raw.githubusercontent.com/telegraphic/eda_post_x/main/docs/example-allsky.png?token=GHSAT0AAAAAABM2MM5N7EEZFTAQEZIBDLHGY7MUUUA" width="400"/>
+<img src="https://user-images.githubusercontent.com/713251/233309020-264bf78d-cd59-4d1a-ab5f-4e325be1b87d.png" width="400"/>
 </p>
 
 ## Introduction
