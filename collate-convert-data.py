@@ -17,6 +17,39 @@ def baseline_id_to_ant_ids(bl_ids):
     ant_ids[bl_ids > 65536, 1] = (bl_ids[bl_ids > 65536] - 65536) % 2048
     return ant_ids
 
+def read_mirfits(filename):
+    with pf.open(filename) as hdu:
+
+        # Read data shapes
+        # Feel the pain of FITS
+        n_ant  = hdu[1].header['NAXIS2']
+        n_chan = hdu[0].header['NAXIS4']
+        n_stokes = hdu[0].header['NAXIS3']
+
+        # convert baselines into antenna indexes
+        a0 = hdu[0].data['ANTENNA1'].astype('int32') - 1
+        a1 = hdu[0].data['ANTENNA2'].astype('int32') - 1
+        
+        #ant_ids = baseline_id_to_ant_ids(bls) 
+        #ant_ids -= 1                                    # Convert to zero-indexed
+        #a0, a1 = ant_ids[:, 0], ant_ids[:, 1]
+
+        # Load matrix
+        # (dec, ra, freq, stokes, complex), where complex has shape (real, imag, weight)
+        hdu_data  = hdu[0].data['DATA'][:, 0, 0, :, :, :]
+        hdu_flags = hdu_data[..., 2].astype('float32')
+
+        # Zero bad data
+        hdu_data[hdu_flags <= 0] = 0
+        hdu_data  = np.ascontiguousarray(hdu_data[..., :2].astype('float32'))
+        hdu_data  = hdu_data.view('complex64').squeeze()
+
+        # Create vis matrix and fill
+        vis_matrix = np.zeros(shape=(n_ant, n_ant, n_chan, n_stokes), dtype='complex64')
+        vis_matrix[a0, a1] = hdu_data
+        vis_matrix[a1, a0] = np.conj(hdu_data)
+    return vis_matrix
+
 def read_uvfits(filename):
     with pf.open(filename) as hdu:
 

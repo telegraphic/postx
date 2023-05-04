@@ -7,6 +7,7 @@ from pygdsm import GSMObserver
 
 from astropy.constants import c
 from astropy.time import Time
+import healpy as hp
 
 #SHORTHAND
 sin, cos = np.sin, np.cos
@@ -73,3 +74,22 @@ def test_ephem_skycoord(sc_array):
         _s0 = ephem_to_skycoord(_e0)
         assert np.isclose(_s0.ra, sc[ii].ra)
         assert np.isclose(_s0.dec, sc[ii].dec)
+
+def pix2sky(nside: int, pix_ids: np.ndarray) -> SkyCoord:
+    """ Convert a healpix pixel_id into a SkyCoord """
+    gl, gb = hp.pix2ang(nside, pix_ids, lonlat=True)
+    sc = SkyCoord(gl, gb, frame='galactic', unit=('deg', 'deg'))
+    return sc
+
+def sky2pix(nside: int, sc: SkyCoord) -> np.ndarray:
+    """ Convert a SkyCoordinate into a healpix pixel_id """
+    gl, gb = sc.galactic.l.to('deg').value, sc.galactic.b.to('deg').value
+    pix = hp.ang2pix(nside, gl, gb, lonlat=True)
+    return pix
+
+def test_pix2sky():
+    NSIDE = 32
+    pix = np.arange(hp.nside2npix(NSIDE))
+    sc  = pix2sky(NSIDE, pix)
+    pix_roundtrip = sky2pix(NSIDE, sc)
+    assert np.allclose(pix, pix_roundtrip)

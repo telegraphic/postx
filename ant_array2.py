@@ -11,8 +11,9 @@ from pygdsm import GSMObserver
 from astropy.constants import c
 from astropy.time import Time
 from astropy.coordinates import SkyCoord
+import healpy as hp
 
-from coord_utils import compute_w, polar_to_cartesian, phase_vector, generate_phase_vector, skycoord_to_ephem
+from coord_utils import compute_w, polar_to_cartesian, phase_vector, generate_phase_vector, skycoord_to_ephem, sky2pix, pix2sky
 
 #SHORTHAND
 sin, cos = np.sin, np.cos
@@ -60,7 +61,11 @@ class RadioArray(ephem.Observer):
             self.workspace['H0'] = H
             self.workspace['d0'] = d
             self.workspace['c0'] = generate_phase_vector(self.xyz_celestial, H, d, self.workspace['f'], conj=True)
-
+        
+        
+        # Healpix workspace
+        self.workspace['hpx'] = {}
+        
         # Setup Global Sky Model
         self.gsm       = GSMObserver()
         self.gsm.lat   = lat
@@ -84,6 +89,15 @@ class RadioArray(ephem.Observer):
         self._print(f'ZENITH: ({ra0}, {dec0})')
         self._print(f'HA, D: ({H}, {d})')
         return H, d
+    
+    @property
+    def zenith(self):
+        return self.get_zenith()
+    
+    def get_zenith(self):
+        ra, dec = self.radec_of(0, np.pi/2)
+        sc = SkyCoord(ra, dec, frame='icrs', unit=('rad', 'rad'))
+        return sc
 
     def load_fits_data(self, filename):
         fn_re = filename.replace('imag', 'real')
@@ -181,6 +195,61 @@ class RadioArray(ephem.Observer):
             self._generate_weight_grid(n_pix)
         B = np.einsum('ijp,pq,ijq->ij', self.workspace['cgrid'], self.data, self.workspace['cgrid_conj'], optimize=True)
         return np.abs(B)
+    
+    
+    def make_healpix(self, n_side=128, fov=np.pi/2, update=True):
+        NSIDE = n_side
+        NPIX  = hp.nside2npix(NSIDE)
+        
+        ws = self.workspace
+        if ws['hpx'].get('n_side', 0) != NSIDE:
+            ws['hpx']['n_side'] = NSIDE
+            ws['hpx']['n_pix']  = NPIX
+            ws['hpx']['pix0']   = np.arange(NPIX)
+            ws['hpx']['sc']     = pix2sky(NSIDE, ws['hpx']['pix0'])
+            update = True 
+            
+        NPIX = ws['hpx']['n_pix']
+        sc   = ws['hpx']['sc']         # SkyCoord coordinates array
+        pix0 = ws['hpx']['pix0']       # Pixel coordinate array
+        
+        if ws['hpx'].get('fov', 0) != fov:
+            ws['hpx']['fov'] = fov
+            update = True
+        
+        if update:
+            sc_zen = self.get_zenith()
+            pix_zen = sky2pix(NSIDE, sc_zen)
+            vec_zen = hp.pix2vec(NSIDE, pix_zen)
+
+            pix_visible = hp.query_disc(NSIDE, vec=vec_zen, radius=fov)
+
+            mask = np.ones(shape=NPIX, dtype='bool')
+            mask[pix_visible] = False
+
+            H = sc_zen.icrs.ra.to('rad').value - sc[~mask].icrs.ra.to('rad').value
+            d = sc[~mask].icrs.dec.to('rad').value
+            
+            ws['hpx']['H'] = H
+            ws['hpx']['d'] = d
+            ws['hpx']['mask'] = mask
+            
+            c = generate_phase_vector(self.xyz_celestial, H, d, self.workspace['f'], conj=False).T
+            ws['hpx']['phs_vector'] = c * ws['c0']    # Correct for vis phase center (i.e.the Sun)
+            
+        
+        H    = ws['hpx']['H']          # Hourangle from zenith
+        d    = ws['hpx']['d']          # Declination
+        mask = ws['hpx']['mask']       # Horizon mask
+        c = ws['hpx']['phs_vector']    # Pointing phase vector
+        
+        B = np.abs(np.einsum('ip,pq,iq->i', c, self.data, np.conj(c), optimize=True))
+
+        hpdata = np.zeros_like(pix0)
+
+        hpdata[pix0[~mask]] = B
+        return hpdata
+                     
 
     def beamform(self, src):
         """ Form a beam toward a given source 
