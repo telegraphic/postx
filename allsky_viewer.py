@@ -104,11 +104,14 @@ class AllSkyViewer(object):
         plt.figure(self.name, figsize=(size, size), frameon=False)
     
     def plot(self, data=None, sfunc=np.abs, overlay_srcs=False,  overlay_grid=True, 
-                  title=None, colorbar=False, return_data=False, **kwargs):
+                  title=None, colorbar=False, return_data=False, subplot_id=None, **kwargs):
         
         # Update WCS and then create imshow
         self._update_wcs()
-        plt.subplot(projection=self.wcs)
+        if subplot_id is not None:
+            plt.subplot(*subplot_id, projection=self.wcs)
+        else:
+            plt.subplot(projection=self.wcs)
         plt.imshow(sfunc(data), **kwargs)
         
         # Create title

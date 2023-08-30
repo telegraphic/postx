@@ -7,242 +7,110 @@ import datetime
 from astropy.io import fits as pf
 import h5py
 from pygdsm import GSMObserver
+import pylab as plt
 
 from astropy.constants import c
 from astropy.time import Time
+from astropy.coordinates import SkyCoord
+import healpy as hp
+
+from coord_utils import compute_w, polar_to_cartesian, phase_vector, generate_phase_vector, skycoord_to_ephem, sky2pix, pix2sky
 
 #SHORTHAND
 sin, cos = np.sin, np.cos
-SPEED_OF_LIGHT = c.value
+from astropy.constants import c
+SPEED_OF_LIGHT = c.value 
 
-def make_source(name, ra, dec, flux=1.0, epoch=2000):
-    """ Create a pyEphem FixedBody radio source
-    Args:
-        name (str):   Name of source, e.g. CasA
-        ra (str):     hh:mm:ss right ascension, e.g. 23:23:26
-        dec (str):    dd:mm:ss declination e.g. 58:48:22.21
-        flux (float): flux brightness in Jy
-        epoch (int):  Defaults to J2000, i.e. 2000
-    Returns:
-        body (pyephem.FixedBody): Source as a pyephem fixed body
+
+class RadioArray(ephem.Observer):
+    """ RadioArray class, designed for post-correlation beamforming and all-sky imaging 
+    
+    This class is a subclass of PyEphem's Observer(), and provides the following methods:
+        
+        get_zenith()     - get the ra/dec at zenith
+        load_fits_data() - load UVFITS data
+        load_h5_data()   - load data in HDF5 format
+        update()         - Recompute coordinates for imaging/beamforming
+        make_image()     - Make an image using post-correlation beamforming
+        make_healpix()   - Generate a grid of beam on healpix coordinates using post-x beamforming
+        beamform()       - Generate a single beam using post-x beamforming
+        generate_gsm()   - Generate and view a sky model using the GSM
     """
-    line = "%s,f,%s,%s,%s,%d"%(name,ra,dec,flux,epoch)
-    body = ephem.readdb(line)
-    return body
-
-def find_max_idx(data):
-    idx = np.unravel_index(np.argmax(data), data.shape)
-    v = data[idx]
-    return idx, v
-
-def polar_to_cartesian(θ,ϕ):
-    x = np.sin(θ) * np.cos(ϕ)
-    y = np.sin(θ) * np.sin(ϕ)
-    z = np.cos(θ)   
-    return x, y, z
-
-def pointing_vec(za, az):
-    x, y, z = polar_to_cartesian(za, az)
-    pvec = np.array((x,y,z), dtype='float64')
-    return pvec
-
-def compute_phase_matrix(w, f, conj=False):
-    """ Compute NxN phase weight matrix """
-    phs = np.exp(1j * 2 * np.pi * w * f)
-    phs = np.conj(phs) if conj else phs
-    pmat = np.outer(phs, np.conj(phs))
-    return pmat
-
-def compute_uvw(xyz, H, d, in_seconds=True, conjugate=False):
-    """ Converts X-Y-Z baselines into U-V-W
-    Parameters
-    ----------
-    xyz: should be a numpy array [x,y,z] of baselines (NOT ANTENNAS!)
-    H: float (float, radians) is the hour angle of the phase reference position
-    d: float (float, radians) is the declination
-    conjugate: (bool): Conjugate UVW coordinates?
-    in_seconds (bool): Return in seconds (True) or meters (False)
-    Returns uvw vector (in microseconds)
-    Notes
-    -----
-    The transformation is precisely that from the matrix relation 4.1 in
-    Thompson Moran Swenson:
-              [sin(H), cos(H), 0],
-              [-sin(d)*cos(H), sin(d)*sin(H), cos(d)],
-              [cos(d)*cos(H), -cos(d)*sin(H), sin(d)]
-    A right-handed Cartesian coordinate system is used where X
-    and Y are measured in a plane parallel to the earth's equator, X in the meridian
-    plane (defined as the plane through the poles of the earth and the reference point
-    in the array), Y is measured toward the east, and Z toward the north pole. In terms
-    of hour angle H and declination d, the coordinates (X, Y, Z) are measured toward
-    (H = 0, d = 0), (H = -6h, d = O), and (d = 90"), respectively.
-    Here (H, d) are usually the hour angle and declination of the phase reference
-    position.
-    """
-    is_list = True
-    if type(xyz) in (list, tuple):
-        x, y, z = xyz
-    if type(xyz) == type(np.array([1])):
-        is_list = False
-        try:
-            #print xyz.shape
-            x, y, z = np.split(xyz, 3, axis=1)
-        except:
-            print(xyz.shape)
-            raise
-
-    sh, sd = sin(H), sin(d)
-    ch, cd = cos(H), cos(d)
-    u  = sh * x + ch * y
-    v  = -sd * ch * x + sd * sh * y + cd * z
-    w  = cd * ch * x - cd * sh * y + sd * z
-
-    if is_list:
-        uvw = np.array((u, v, w))
-    else:
-        uvw = np.column_stack((u, v, w))
-
-    if conjugate:
-        uvw *= -1
-    if in_seconds:
-        return uvw / SPEED_OF_LIGHT
-    else:
-        return uvw
-
-def compute_w(xyz, H, d, conjugate=False, in_seconds=True):
-    """ Compute geometric delay τ_g, equivalent to w term """
-    x, y, z = np.split(xyz, 3, axis=1)
-    sh, sd = sin(H), sin(d)
-    ch, cd = cos(H), cos(d)
-    w  = cd * ch * x - cd * sh * y + sd * z
-    w = -w if conjugate else w
-    w = w / SPEED_OF_LIGHT if in_seconds else w
-    return w.squeeze()
-
-def generate_phase_matrix(xyz, H, d, f, conj=False):
-    w = compute_w(xyz, H, d)
-    pmat = compute_phase_matrix(w, f, conj)
-    return pmat
-
-class AntArray(ephem.Observer):
-    """ Antenna array
-    Based on pyEphem's Observer class.
-    Args:
-        lat (str):       latitude of array centre, e.g. 44:31:24.88
-        long (str):      longitude of array centre, e.g. 11:38:45.56
-        elev (float):    elevation in metres of array centre
-        date (datetime): datetime object, date and time of observation
-        antennas (np.array): numpy array of antenna positions, in xyz coordinates in meters, relative to the array centre.
-    """
-    def __init__(self, lat, long, elev, date, antennas):
-        super(AntArray, self).__init__()
-        self.lat = lat
-        self.long = long
-        self.elev = elev
-        self.date = date
-        self.antennas = np.array(antennas)
-        self.n_ant    = len(antennas)
-        self.baselines = self._generate_baseline_ids()
-        self.xyz       = self._compute_baseline_vectors()
-
-    def _compute_baseline_vectors(self, autocorrs=True):
-        """ Compute all the baseline vectors (XYZ) for antennas
-        Args:
-            autocorrs (bool): baselines should contain autocorrs (zero-length baselines)
-        Returns:
-            xyz (np.array): XYZ array of all antenna combinations, in ascending antenna IDs.
-        """
-        xyz   = self.antennas
-        n_ant = self.n_ant
-
-        if autocorrs:
-            bls = np.zeros([n_ant * (n_ant - 1) // 2 + n_ant, 3])
-        else:
-            bls = np.zeros([n_ant * (n_ant - 1) // 2, 3])
-
-        bls_idx = 0
-        for ii in range(n_ant):
-            for jj in range(n_ant):
-                if jj >= ii:
-                    if autocorrs is False and ii == jj:
-                        pass
-                    else:
-                        bls[bls_idx] = xyz[ii] - xyz[jj]
-                        bls_idx += 1
-        return bls
-
-    def _generate_baseline_ids(self, autocorrs=True):
-        """ Generate a list of unique baseline IDs and antenna pairs
-        Args:
-            autocorrs (bool): baselines should contain autocorrs (zero-length baselines)
-        Returns:
-            ant_arr (list): List of antenna pairs that correspond to baseline vectors
-        """
-        ant_arr = []
-        for ii in range(1, self.n_ant + 1):
-            for jj in range(1, self.n_ant + 1):
-                if jj >= ii:
-                    if autocorrs is False and ii == jj:
-                        pass
-                    else:
-                        ant_arr.append((ii, jj))
-        return ant_arr
-
-    def update(self, date):
-        """ Update antenna with a new datetime """
-        self.date = date
-
-    def report(self):
-        print(self)
-        print(self.xyz)
-
-
-class RadioArray(AntArray):
     def __init__(self, lat, long, elev, f_mhz, antxyz_h5, 
                  t0=None, phase_center=None, conjugate_data=False, verbose=False):
+        """ Initialize RadioArray class (based on PyEphem observer)
+        
+        Args:
+            lat (str):         Latitude of telescope (passed to pyephem)
+            long (str):        Longtude of telescope (passed to pyephem)
+            elev (float):      Elevation of telescope (passed to pyephem)
+            f_mhz (np.array):  Frequency of observations, in MHz
+            t0 (astropy.Time): Time of observation start
+            antxyz_h5 (np.array):    HDF5 file with antenna locations
+            phase_center (SkyCoord): Phase center of telescope, if not Zenith.
+                                     Used to apply an extra geometric delay correction
+            conjugate_data (bool):   Flag to conjugate data (in case upper/lower triangle confusion)
+            verbose (bool):    Print extra details to screen
+        
+        Notes:
+            antxyz_h5 file should have a 'xyz_local' and 'xyz_celestial' dataset, which
+            store antenna positions in meters, references to zenith (local) and the NCP (celestial)
+        
+        """
+        super().__init__()
+        self.lat  = lat
+        self.lon  = long
+        self.elev = elev 
+        self.date = t0 if t0 else datetime.datetime.now()
         
         with h5py.File(antxyz_h5, 'r') as h:
-            self.xyz_local     = h['xyz_local'][:]      # TODO: Is this East-North-Up?
+            self.xyz_local     = h['xyz_local'][:]       # TODO: Is this East-North-Up?
             self.xyz_celestial = h['xyz_celestial'][:]   # TODO: Calculate instead?
             self.n_ant = len(self.xyz_local)
         
         self.f =  f_mhz * 1e6
-        
-        # Set date if 
-        date = t0 if t0 else datetime.datetime.now()
-
+    
         # Set debug verbosity
         self.verbose = verbose
 
         # Correlation matrix and pointing vector w
-        self.data = np.zeros((self.n_ant, self.n_ant), dtype='complex128')
-        self.w    = np.ones(self.n_ant, dtype='complex128')
+        self.data = np.zeros((self.n_ant, self.n_ant), dtype='complex64')
         self.conjugate_data = conjugate_data
-
-        # Call super to setup antenna XYZ
-        super().__init__(lat, long, elev, date, self.xyz_local)
-
-        # Set phase center
-        self._f_idx = 0
-        self._phs_delay_mat = None
-        if phase_center is not None:
-            self.phase_center = phase_center
-            H, d = self._src_hourangle(phase_center)
-            _f = self.f[self._f_idx]
-            self._phs_delay_mat = generate_phase_matrix(self.xyz_celestial, H, d, _f, conj=True)
-
+    
+        # Create workspace dictionary, for storing state
+        self.workspace = {}
+        self.workspace['f_idx']  = 0
+        self.workspace['f']      = self.f[0]
+        
+        # Setup phase center
+        if phase_center is None:
+            # c0 is phase weights vector 
+            self.workspace['c0'] = np.ones(self.n_ant, dtype='complex64')
+            self.phase_center    = 'ZENITH'
+        else:
+            self.phase_center    = phase_center
+            H, d = self._compute_hourangle(phase_center)
+            self.workspace['H0'] = H
+            self.workspace['d0'] = d
+            self.workspace['c0'] = generate_phase_vector(self.xyz_celestial, H, d, self.workspace['f'], conj=True)
+        
+        # Healpix workspace
+        self.workspace['hpx'] = {}
+        
         # Setup Global Sky Model
         self.gsm       = GSMObserver()
         self.gsm.lat   = lat
         self.gsm.lon   = long
         self.gsm.elev  = elev
-        self.gsm.date  = date
+        self.gsm.date  = self.date
     
     def _print(self, msg):
         if self.verbose:
             print(msg)
 
-    def _src_hourangle(self, src):
+    def _compute_hourangle(self, src):
+        if isinstance(src, SkyCoord):
+            src = skycoord_to_ephem(src)
         src.compute(self)
         ra0, dec0 = self.radec_of(0, np.pi/2)
         H = ra0 - src.ra
@@ -252,96 +120,96 @@ class RadioArray(AntArray):
         self._print(f'ZENITH: ({ra0}, {dec0})')
         self._print(f'HA, D: ({H}, {d})')
         return H, d
+    
+    @property
+    def time(self):
+        return Time(self.date.datetime())
+    
+    @property
+    def zenith(self):
+        return self.get_zenith()
+    
+    def get_zenith(self):
+        """ Return the sky coordinates at zenith 
+        
+        Returns:
+           zenith (SkyCoord): Zenith SkyCoord object
+        """
+        ra, dec = self.radec_of(0, np.pi/2)
+        sc = SkyCoord(ra, dec, frame='icrs', unit=('rad', 'rad'))
+        return sc
 
     def load_fits_data(self, filename):
         fn_re = filename.replace('imag', 'real')
         fn_im = filename.replace('real', 'imag')
         d_re = pf.open(fn_re)[0].data
         d_im = pf.open(fn_im)[0].data
-        self.data = np.array(d_re + 1j * d_im, dtype='complex128')
-
-        if self._phs_delay_mat is not None:
-            self._print("Applying phase delay matrix")
-            self.data *= self._phs_delay_mat
-    
+        
+        self.data = np.zeros_like(d_re, dtype='complex128')
+        self.workspace['f_idx'] = 0
+        self.data.real = d_re
+        self.data.imag = d_im
+            
     def load_h5_data(self, filename):
         self.h5   = h5py.File(filename, 'r')
         self._data = self.h5['data']
-        self.update(f_idx=0)
+        
+        dt = Time(self.h5['time'][0], format='jd').datetime
+        self.f = self.h5['freqs'][:] * 1e6
+        pc = SkyCoord(self.h5['ra'][0], self.h5['dec'][0], unit=('deg', 'deg'))
+        self.phase_center = skycoord_to_ephem(pc)
+        self.update(date=dt, f_idx=0)
         
     def update(self, date=None, f_idx=None, pol_idx=0, update_gsm=False):
+        """ Update internal state
+        
+        Args:
+            date (datetime): New observation datetime
+            f_idx (int): Integer index for frequency axis
+            pol_idx (int): Change polarization index (0--4)
+            update_gsm (bool): Update GSM observed sky. Default False
+        
+        Notes:
+            Call when changing datetime, frequency or polarization index
+        """
         if date is not None:
             self._print("Updating datetime")
             self.date = date
+            self.gsm.date = self.date
+
         if f_idx is not None:
             self._print("Updating freq idx")
-            self._f_idx = f_idx
+            self.workspace['f_idx'] = f_idx
             self.data  = self._data[f_idx, :, :, pol_idx]
+            
         if self.phase_center is not None:
             self._print("Updating phase matrix")
-            H, d = self._src_hourangle(self.phase_center)
-            _f = self.f[self._f_idx]
-            self._phs_delay_mat = generate_phase_matrix(self.xyz_celestial, H, d, _f, conj=True)
+            H, d = self._compute_hourangle(self.phase_center)
+            f = self.workspace['f']
+            self.workspace['H0'] = H
+            self.workspace['d0'] = d
+            self.workspace['c0'] = generate_phase_vector(self.xyz_celestial, H, d, f, conj=True)
+            
         if self.conjugate_data:
             self._print("conjugating data")
             self.data = np.conj(self.data)
-        if self._phs_delay_mat is not None:
-            self._print("Applying phase delay matrix")
-            self.data *= self._phs_delay_mat
+            
         if update_gsm:
             self._print("Updating GSM")
+            self.gsm.date = self.date
             self.gsm.generate(self.f[f_idx] / 1e6)
 
-    
-    def beamform(self, w=None):
-        self.w = w if w is not None else self.w
-        b = np.einsum('p,q,pq', self.w, np.conj(self.w), self.data)
-        return b
-    
-    def incoherent_beamform(self, w=None):
-        self.w = w if w is not None else self.w
-        b = np.einsum('p,p,pp', self.w, np.conj(self.w), self.data)
-        return b        
-    
-    def point(self, θ, ϕ):
-        # Compute geometric delay        
-        x, y, z = polar_to_cartesian(θ, ϕ)
-        pvec = np.array((x, y, z), dtype='float64')
-        self._point_vec(pvec)
-    
-    def phase_to_src(self, src):
-        H, d = self._src_hourangle(src)
-        pm = generate_phase_matrix(self.xyz_celestial, H, d, self.f[self._f_idx], conj=False)
-
-        self._phs_delay_mat = pm
-        return pm
-        
-    def _point_vec(self, pvec):
-        t_g  = np.dot(self.xyz_local, pvec) / SPEED_OF_LIGHT
-        
-        # convert time delay to phase 
-        phase_weights = np.exp(1j * 2 * np.pi * self.f[self._f_idx] * t_g)
-        self.w = phase_weights
-        self.t_g = t_g
-
-    def make_image(self, n_pix=128):
-
-        l = np.linspace(1, -1, n_pix)
-        m = np.linspace(1, -1, n_pix)
-
-        grid = np.zeros((n_pix, n_pix), dtype='float64')
-        for xx in range(n_pix):
-            for yy in range(n_pix):
-                lm2 = l[xx]**2 + m[yy]**2
-                if lm2 < 1:
-                    pvec = np.array((l[xx], m[yy], np.sqrt(1 - lm2)))
-                    self._point_vec(pvec)
-                    grid[yy, xx] = np.abs(self.beamform())
-        return grid
-
     def _generate_weight_grid(self, n_pix):
+        """ Generate a grid of pointing weights 
+        
+        Args:
+            n_pix (int): Number of pixels in image
+        
+        Notes:
+            Generates a 2D array of coefficients (used internally).
+        """
         l = np.linspace(1, -1, n_pix, dtype='float32')
-        m = np.linspace(1, -1, n_pix, dtype='float32')
+        m = np.linspace(-1, 1, n_pix, dtype='float32')
         lg, mg = np.meshgrid(l, m)
         ng     = np.sqrt(1 - lg**2 - mg**2)
 
@@ -356,28 +224,128 @@ class RadioArray(AntArray):
         t_g = np.einsum('ijd,pd', lmn, self.xyz_local, optimize=True) / SPEED_OF_LIGHT
 
         # geometric delay to phase weights
-        w = np.exp(1j * 2 * np.pi * self.f[self._f_idx] * t_g, dtype='complex64')
-        self._wg = w
-        self._wgc = np.conj(w)
-        return w
+        c = phase_vector(t_g, self.workspace['f']) * self.workspace['c0']
+        
+        self.workspace['cgrid'] = c
+        self.workspace['cgrid_conj'] = np.conj(c)
+    
+    def plot_corr_matrix(self, log=True):
+        data = np.log(np.abs(self.data)) if log else np.abs(self.data)
+        plt.imshow(data, aspect='auto')
+        plt.xlabel("Antenna P")
+        plt.ylabel("Antenna Q")
+        plt.colorbar()
+    
+    def make_image(self, n_pix=128, update_weight_grid=True):
+        """ Make an image out of a beam grid 
+        
+        Args:
+            n_pix (int): Image size in pixels (N_pix x N_pix)
+            update_weight_grid (bool): Rerun the grid generation (needed when image size changes).
+            
+        Returns:
+            B (np.array): Image array in (x, y)
+        """
+        if update_weight_grid:
+            self._generate_weight_grid(n_pix)
+        B = np.einsum('ijp,pq,ijq->ij', self.workspace['cgrid'], self.data, self.workspace['cgrid_conj'], optimize=True)
+        return np.abs(B)
+    
+    
+    def make_healpix(self, n_side=128, fov=np.pi/2, update=True, apply_mask=True):
+        """ Generate a grid of beams on healpix coordinates 
+        
+        Args:
+            n_side (int): Healpix NSIDE array size
+            fov (float): Field of view in radians, within which to generate healpix beams. Defaults to pi/2.
+            phase_center (SkyCoord): SkyCoord of phase center. Will use zenith if not supplied.
+            update (bool): Update pre-computed pixel and coordinate data. Defaults to True.
+                           Setting to False gives a speedup, but requires that pre-computed coordinates are still accurate.
+                           
+        Returns:
+            hpdata (np.array): Array of healpix data, ready for hp.mollview() and other healpy routines.
+        """
+        NSIDE = n_side
+        NPIX  = hp.nside2npix(NSIDE)
+        
+        ws = self.workspace
+        if ws['hpx'].get('n_side', 0) != NSIDE:
+            ws['hpx']['n_side'] = NSIDE
+            ws['hpx']['n_pix']  = NPIX
+            ws['hpx']['pix0']   = np.arange(NPIX)
+            ws['hpx']['sc']     = pix2sky(NSIDE, ws['hpx']['pix0'])
+            update = True 
+            
+        NPIX = ws['hpx']['n_pix']
+        sc   = ws['hpx']['sc']         # SkyCoord coordinates array
+        pix0 = ws['hpx']['pix0']       # Pixel coordinate array
+        
+        if ws['hpx'].get('fov', 0) != fov:
+            ws['hpx']['fov'] = fov
+            update = True
+        
+        if update:
+            sc_zen = self.get_zenith()
+            pix_zen = sky2pix(NSIDE, sc_zen)
+            vec_zen = hp.pix2vec(NSIDE, pix_zen)
 
-    def make_image2(self, n_pix=128):
-        self._generate_weight_grid(n_pix)
-        B = np.einsum('ijp,pq,ijq->ij', self._wg, self.data, self._wgc, optimize=True)
-        return B.real
-    
-    def plot_image(self, img=None, n_pix=128):
-        import pylab as plt
-        if img is None:
-            img = self.make_image(n_pix)
-        plt.imshow(np.log(img), extent=(-1, 1, 1, -1), interpolation='none')
-    
+            mask = np.ones(shape=NPIX, dtype='bool')
+
+            if apply_mask:
+                pix_visible = hp.query_disc(NSIDE, vec=vec_zen, radius=fov)
+                mask[pix_visible] = False
+            else:
+                mask = np.zeros_like(mask)
+
+            H = sc_zen.icrs.ra.to('rad').value - sc[~mask].icrs.ra.to('rad').value
+            d = sc[~mask].icrs.dec.to('rad').value
+            
+            ws['hpx']['H'] = H
+            ws['hpx']['d'] = d
+            ws['hpx']['mask'] = mask
+            
+            c = generate_phase_vector(self.xyz_celestial, H, d, self.workspace['f'], conj=False).T
+            ws['hpx']['phs_vector'] = c * ws['c0']    # Correct for vis phase center (i.e.the Sun)
+            
+        
+        H    = ws['hpx']['H']          # Hourangle from zenith
+        d    = ws['hpx']['d']          # Declination
+        mask = ws['hpx']['mask']       # Horizon mask
+        c = ws['hpx']['phs_vector']    # Pointing phase vector
+        
+        B = np.abs(np.einsum('ip,pq,iq->i', c, self.data, np.conj(c), optimize=True))
+
+        hpdata = np.zeros_like(pix0)
+
+        hpdata[pix0[~mask]] = B
+        return hpdata
+                     
+
+    def beamform(self, src):
+        """ Form a single beam toward a given source 
+        
+        Args:
+            src (SkyCoord): Coordinates to point to
+        
+        Returns:
+            B (np.array): Returned beamformed power for current frequency step.
+        """
+        
+        H, d = self._compute_hourangle(src)
+        c = generate_phase_vector(self.xyz_celestial, H, d, self.workspace['f'], conj=False)
+        c *= self.workspace['c0']
+        B = np.einsum('p,pq,q', c, self.data, np.conj(c), optimize=True)
+        return np.abs(B)
+
     def generate_gsm(self):
+        """ Generate a GlobalSkyModel orthographic map of observed sky
+        
+        Returns:
+            pmap (array): 2D orthographic projection of observed sky
+        """
         import healpy as hp
         import pylab as plt
-        sky = self.gsm.generate(self.f[self._f_idx] / 1e6)
+        sky = self.gsm.generate(self.f[self.workspace['f_idx']] / 1e6)
         pmap = hp.orthview(sky, half_sky=True, return_projected_map=True, flip='astro')
         plt.close()
         return pmap[::-1]
-
-

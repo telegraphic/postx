@@ -1,4 +1,3 @@
-import pyuvdata
 import numpy
 import numpy as np
 import os
@@ -109,15 +108,47 @@ def generate_freqs(uvf):
     f_mhz  = (np.arange(n_chan) * fd + f0) / 1e6
     return f_mhz
 
-def uvfits_to_dict(uvf):
+
+def uvfits_to_dict(filename):
+    uvf = pf.open(filename)
+    bl_ids = hdu[0].data['BASELINE'].astype('int32')
+    ant_ids = baseline_id_to_ant_ids(bls)
+    
     dd = {
-        'u': uvf[0].data['UU'],
-        'v': uvf[0].data['VV'],
-        'w': uvf[0].data['WW'],
         'jd': uvf[0].data['DATE'][0],
         'ra': uvf[0].header['CRVAL5'],
         'dec': uvf[0].header['CRVAL6'],
-        'f_mhz': generate_freqs(uvf)
+        'f_mhz': generate_freqs(uvf),
+        'baselines': {
+            'ant0': ant_ids[:, 0],
+            'ant1': ant_ids[:, 1],
+            'bl_ids': bl_ids,
+            'u': uvf[0].data['UU'],
+            'v': uvf[0].data['VV'],
+            'w': uvf[0].data['WW'],
+        },
+        'xyz': uvf[1].data['STABXYZ']
+    }
+    return dd
+
+def mirfits_to_dict(filename):
+    uvf = pf.open(filename)
+    a0 = uvf[0].data['ANTENNA1'].astype('int32') - 1
+    a1 = uvf[0].data['ANTENNA2'].astype('int32') - 1
+
+    dd = {
+        'jd': uvf[0].data['DATE'][0],
+        'ra': uvf[0].header['CRVAL5'],
+        'dec': uvf[0].header['CRVAL6'],
+        'f_mhz': generate_freqs(uvf),
+        'baselines': {
+            'ant0': a0,
+            'ant1': a1,
+            'u': uvf[0].data['UU'],
+            'v': uvf[0].data['VV'],
+            'w': uvf[0].data['WW'],
+        },
+        'xyz': uvf[1].data['STABXYZ']
     }
     return dd
 

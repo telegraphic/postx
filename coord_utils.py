@@ -9,6 +9,8 @@ from astropy.constants import c
 from astropy.time import Time
 import healpy as hp
 
+from astropy.coordinates import SkyCoord
+
 #SHORTHAND
 sin, cos = np.sin, np.cos
 SPEED_OF_LIGHT = c.value
@@ -28,6 +30,15 @@ def compute_w(xyz, H, d, conjugate=False, in_seconds=True):
     w = -w if conjugate else w
     w = w / SPEED_OF_LIGHT if in_seconds else w
     return w.squeeze()
+
+def compute_uvw(xyz, H, d):
+    x, y, z = np.split(xyz, 3, axis=1)
+    sh, sd = sin(H), sin(d)
+    ch, cd = cos(H), cos(d)
+    u  = sh * x + ch * y
+    v  = -sd * ch * x + sd * sh * y + cd * z
+    w  = cd * ch * x - cd * sh * y + sd * z
+    return  np.column_stack((u, v, w))
 
 def generate_phase_vector(xyz, H, d, f, conj=False):
     w  = compute_w(xyz, H, d)
@@ -55,7 +66,6 @@ def make_source(name, ra, dec, flux=1.0, epoch=2000):
     body = ephem.readdb(line)
     return body
 
-from astropy.coordinates import SkyCoord
 
 def skycoord_to_ephem(x, name='', flux=1, epoch=2000):
     ra  = x.ra.to('hourangle').to_string(sep=':')
@@ -65,7 +75,7 @@ def skycoord_to_ephem(x, name='', flux=1, epoch=2000):
     return body
 
 def ephem_to_skycoord(x):
-    s = SkyCoord(x._ra, x._dec, unit=('rad', 'rad'))
+    s = SkyCoord(x.ra, x.dec, unit=('rad', 'rad'))
     return s
 
 def test_ephem_skycoord(sc_array):
