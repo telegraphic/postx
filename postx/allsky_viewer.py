@@ -1,6 +1,6 @@
 import numpy as np
 import pylab as plt
-from ant_array import RadioArray
+from .ant_array import RadioArray
 from astropy.time import Time
 import ephem
 import h5py

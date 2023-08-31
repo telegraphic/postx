@@ -14,7 +14,7 @@ from astropy.time import Time
 from astropy.coordinates import SkyCoord
 import healpy as hp
 
-from coord_utils import compute_w, polar_to_cartesian, phase_vector, generate_phase_vector, skycoord_to_ephem, sky2pix, pix2sky
+from .coord_utils import phase_vector, generate_phase_vector, skycoord_to_ephem, skycoord_to_lmn, sky2hpix, hpix2sky
 
 #SHORTHAND
 sin, cos = np.sin, np.cos
@@ -236,17 +236,17 @@ class RadioArray(ephem.Observer):
         plt.ylabel("Antenna Q")
         plt.colorbar()
     
-    def make_image(self, n_pix=128, update_weight_grid=True):
+    def make_image(self, n_pix=128, update=True):
         """ Make an image out of a beam grid 
         
         Args:
             n_pix (int): Image size in pixels (N_pix x N_pix)
-            update_weight_grid (bool): Rerun the grid generation (needed when image size changes).
+            update (bool): Rerun the grid generation (needed when image size changes).
             
         Returns:
             B (np.array): Image array in (x, y)
         """
-        if update_weight_grid:
+        if update:
             self._generate_weight_grid(n_pix)
         B = np.einsum('ijp,pq,ijq->ij', self.workspace['cgrid'], self.data, self.workspace['cgrid_conj'], optimize=True)
         return np.abs(B)
@@ -273,7 +273,7 @@ class RadioArray(ephem.Observer):
             ws['hpx']['n_side'] = NSIDE
             ws['hpx']['n_pix']  = NPIX
             ws['hpx']['pix0']   = np.arange(NPIX)
-            ws['hpx']['sc']     = pix2sky(NSIDE, ws['hpx']['pix0'])
+            ws['hpx']['sc']     = hpix2sky(NSIDE, ws['hpx']['pix0'])
             update = True 
             
         NPIX = ws['hpx']['n_pix']
@@ -286,7 +286,7 @@ class RadioArray(ephem.Observer):
         
         if update:
             sc_zen = self.get_zenith()
-            pix_zen = sky2pix(NSIDE, sc_zen)
+            pix_zen = sky2hpix(NSIDE, sc_zen)
             vec_zen = hp.pix2vec(NSIDE, pix_zen)
 
             mask = np.ones(shape=NPIX, dtype='bool')
@@ -297,19 +297,15 @@ class RadioArray(ephem.Observer):
             else:
                 mask = np.zeros_like(mask)
 
-            H = sc_zen.icrs.ra.to('rad').value - sc[~mask].icrs.ra.to('rad').value
-            d = sc[~mask].icrs.dec.to('rad').value
-            
-            ws['hpx']['H'] = H
-            ws['hpx']['d'] = d
+            lmn = skycoord_to_lmn(sc[pix_visible], sc_zen)
+            t_g = np.einsum('id,pd', lmn, self.xyz_local, optimize=True) / SPEED_OF_LIGHT
+            c = phase_vector(t_g, ws['f'])
+
             ws['hpx']['mask'] = mask
-            
-            c = generate_phase_vector(self.xyz_celestial, H, d, self.workspace['f'], conj=False).T
+            ws['hpx']['lmn'] = lmn
             ws['hpx']['phs_vector'] = c * ws['c0']    # Correct for vis phase center (i.e.the Sun)
             
         
-        H    = ws['hpx']['H']          # Hourangle from zenith
-        d    = ws['hpx']['d']          # Declination
         mask = ws['hpx']['mask']       # Horizon mask
         c = ws['hpx']['phs_vector']    # Pointing phase vector
         
@@ -319,23 +315,6 @@ class RadioArray(ephem.Observer):
 
         hpdata[pix0[~mask]] = B
         return hpdata
-                     
-
-    def beamform(self, src):
-        """ Form a single beam toward a given source 
-        
-        Args:
-            src (SkyCoord): Coordinates to point to
-        
-        Returns:
-            B (np.array): Returned beamformed power for current frequency step.
-        """
-        
-        H, d = self._compute_hourangle(src)
-        c = generate_phase_vector(self.xyz_celestial, H, d, self.workspace['f'], conj=False)
-        c *= self.workspace['c0']
-        B = np.einsum('p,pq,q', c, self.data, np.conj(c), optimize=True)
-        return np.abs(B)
 
     def generate_gsm(self):
         """ Generate a GlobalSkyModel orthographic map of observed sky
