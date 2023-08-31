@@ -3,8 +3,20 @@
 This repository contains code to do post-correlation beamforming and imaging. It is designed for compact low-frequency arrays like the EDA2.
 
 <p align="center">
-<img src="https://user-images.githubusercontent.com/713251/233309020-264bf78d-cd59-4d1a-ab5f-4e325be1b87d.png" width="400"/>
+<img src="https://user-images.githubusercontent.com/713251/264561011-2666259c-8829-4932-8f2c-83b4bcdaff21.png" width="600"/>
 </p>
+
+### Dependencies
+
+```
+astropy
+h5py
+healpy
+matplotlib
+numpy
+pyephem
+pygdsm
+```
 
 ## Introduction
 
