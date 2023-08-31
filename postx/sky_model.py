@@ -5,7 +5,7 @@ import ephem
 import numpy as np
 
 
-def make_source(name, ra, dec, flux=1.0, epoch=2000):
+def make_source(name, ra: str, dec: str, flux: float=1.0, epoch: int=2000):
     """ Create a pyEphem FixedBody radio source
     Args:
         name (str):   Name of source, e.g. CasA
@@ -38,14 +38,14 @@ class SkyModel(object):
     def __str__(self):
         return self.__repr__()
 
-    def add_source(self, src):
+    def add_source(self, src: ephem.FixedBody):
         """ Add new source to sky model
         Args:
             src (ephem.FixedBody): Sky source to add
         """
         self.sources.append(src)
 
-    def read_sourcelist(self, srclist):
+    def read_sourcelist(self, srclist: list):
         """ Read a list of sources, convert to FixedBody objects
         Args:
             srclist (list): A list of sources, each entry a string:
@@ -55,7 +55,7 @@ class SkyModel(object):
             sobj = make_source(*src)
             self.add_source(sobj)
 
-    def compute_ephemeris(self, observatory):
+    def compute_ephemeris(self, observatory: ephem.Observer):
         """ Compute RA/DEC for all sources for given observatory
         Args:
             observatory (AntArray): pyephem Observer, or AntArray

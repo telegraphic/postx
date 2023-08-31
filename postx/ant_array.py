@@ -14,7 +14,7 @@ from astropy.time import Time
 from astropy.coordinates import SkyCoord
 import healpy as hp
 
-from .coord_utils import phase_vector, generate_phase_vector, skycoord_to_ephem, skycoord_to_lmn, sky2hpix, hpix2sky
+from .coord_utils import phase_vector, ephem_to_skycoord, skycoord_to_ephem, skycoord_to_lmn, sky2hpix, hpix2sky
 
 #SHORTHAND
 sin, cos = np.sin, np.cos
@@ -36,8 +36,8 @@ class RadioArray(ephem.Observer):
         beamform()       - Generate a single beam using post-x beamforming
         generate_gsm()   - Generate and view a sky model using the GSM
     """
-    def __init__(self, lat, long, elev, f_mhz, antxyz_h5, 
-                 t0=None, phase_center=None, conjugate_data=False, verbose=False):
+    def __init__(self, lat: str, long: str, elev: float, f_mhz: float, antxyz_h5: str, 
+                 t0: Time=None, phase_center: SkyCoord=None, conjugate_data: bool=False, verbose: bool=False):
         """ Initialize RadioArray class (based on PyEphem observer)
         
         Args:
@@ -53,8 +53,8 @@ class RadioArray(ephem.Observer):
             verbose (bool):    Print extra details to screen
         
         Notes:
-            antxyz_h5 file should have a 'xyz_local' and 'xyz_celestial' dataset, which
-            store antenna positions in meters, references to zenith (local) and the NCP (celestial)
+            antxyz_h5 file should have a 'xyz_local' dataset, which
+            stores antenna positions in meters, references to zenith (local / ENU) 
         
         """
         super().__init__()
@@ -64,8 +64,7 @@ class RadioArray(ephem.Observer):
         self.date = t0 if t0 else datetime.datetime.now()
         
         with h5py.File(antxyz_h5, 'r') as h:
-            self.xyz_local     = h['xyz_local'][:]       # TODO: Is this East-North-Up?
-            self.xyz_celestial = h['xyz_celestial'][:]   # TODO: Calculate instead?
+            self.xyz_local     = h['xyz_local'][:]      
             self.n_ant = len(self.xyz_local)
         
         self.f =  f_mhz * 1e6
@@ -86,13 +85,10 @@ class RadioArray(ephem.Observer):
         if phase_center is None:
             # c0 is phase weights vector 
             self.workspace['c0'] = np.ones(self.n_ant, dtype='complex64')
-            self.phase_center    = 'ZENITH'
+            self.phase_center    = self.get_zenith()
         else:
             self.phase_center    = phase_center
-            H, d = self._compute_hourangle(phase_center)
-            self.workspace['H0'] = H
-            self.workspace['d0'] = d
-            self.workspace['c0'] = generate_phase_vector(self.xyz_celestial, H, d, self.workspace['f'], conj=True)
+            self.workspace['c0'] = self._generate_phase_vector(self.phase_center, conj=True)
         
         # Healpix workspace
         self.workspace['hpx'] = {}
@@ -104,11 +100,41 @@ class RadioArray(ephem.Observer):
         self.gsm.elev  = elev
         self.gsm.date  = self.date
     
-    def _print(self, msg):
+    def _generate_phase_vector(self, src: SkyCoord, conj: bool=False):
+        """ Generate a phase vector for a given source 
+        
+        Args:
+            src (astropy.SkyCoord or ephem.FixedBody): Source to compute delays toward
+        
+        Returns:
+            c (np.array): Per-antenna phase weights
+        """
+        if isinstance(src, (ephem.FixedBody, ephem.Sun, ephem.Moon)):
+            src.compute(self)
+            src = ephem_to_skycoord(src)
+            
+        lmn = skycoord_to_lmn(src, self.get_zenith())
+        t_g = np.einsum('id,pd', lmn, self.xyz_local, optimize=True) / SPEED_OF_LIGHT
+        c = phase_vector(t_g, self.workspace['f'], conj=conj)
+        return c
+    
+    def _print(self, msg: str):
+        """ Print a message if verbose flag is set"""
         if self.verbose:
             print(msg)
 
-    def _compute_hourangle(self, src):
+    def _compute_hourangle(self, src: SkyCoord) -> tuple:
+        """ Compute the hourangle between a source and current zenith 
+        
+        Args:
+            src (SkyCoord or FixedBody): Source to compute hourangle of
+        
+        Returns:
+            (H, d) (float, float): Hourangle and declination of the source w.r.t. zenith
+        
+        Notes:
+            This method is deprecated, in favor of get_zenith() and using lmn coordinates
+        """
         if isinstance(src, SkyCoord):
             src = skycoord_to_ephem(src)
         src.compute(self)
@@ -119,7 +145,7 @@ class RadioArray(ephem.Observer):
         self._print(f'{src.name} \tRA / DEC:  ({src.ra}, {src.dec}) \n\tALT / AZ:  ({src.alt}, {src.az})')
         self._print(f'ZENITH: ({ra0}, {dec0})')
         self._print(f'HA, D: ({H}, {d})')
-        return H, d
+        return (H, d)
     
     @property
     def time(self):
@@ -129,7 +155,7 @@ class RadioArray(ephem.Observer):
     def zenith(self):
         return self.get_zenith()
     
-    def get_zenith(self):
+    def get_zenith(self) -> SkyCoord:
         """ Return the sky coordinates at zenith 
         
         Returns:
@@ -139,7 +165,8 @@ class RadioArray(ephem.Observer):
         sc = SkyCoord(ra, dec, frame='icrs', unit=('rad', 'rad'))
         return sc
 
-    def load_fits_data(self, filename):
+    def load_fits_data(self, filename: str):
+        """ Load data in FITS format """
         fn_re = filename.replace('imag', 'real')
         fn_im = filename.replace('real', 'imag')
         d_re = pf.open(fn_re)[0].data
@@ -150,7 +177,8 @@ class RadioArray(ephem.Observer):
         self.data.real = d_re
         self.data.imag = d_im
             
-    def load_h5_data(self, filename):
+    def load_h5_data(self, filename: str):
+        """ Load data in HDF5 format """
         self.h5   = h5py.File(filename, 'r')
         self._data = self.h5['data']
         
@@ -160,7 +188,7 @@ class RadioArray(ephem.Observer):
         self.phase_center = skycoord_to_ephem(pc)
         self.update(date=dt, f_idx=0)
         
-    def update(self, date=None, f_idx=None, pol_idx=0, update_gsm=False):
+    def update(self, date: datetime.datetime=None, f_idx: int=None, pol_idx: int=0, update_gsm: bool=False):
         """ Update internal state
         
         Args:
@@ -173,6 +201,8 @@ class RadioArray(ephem.Observer):
             Call when changing datetime, frequency or polarization index
         """
         if date is not None:
+            if isinstance(date, Time):
+                date = date.datetime
             self._print("Updating datetime")
             self.date = date
             self.gsm.date = self.date
@@ -183,12 +213,9 @@ class RadioArray(ephem.Observer):
             self.data  = self._data[f_idx, :, :, pol_idx]
             
         if self.phase_center is not None:
-            self._print("Updating phase matrix")
-            H, d = self._compute_hourangle(self.phase_center)
+            self._print("Updating phase vector")
             f = self.workspace['f']
-            self.workspace['H0'] = H
-            self.workspace['d0'] = d
-            self.workspace['c0'] = generate_phase_vector(self.xyz_celestial, H, d, f, conj=True)
+            self.workspace['c0'] = self._generate_phase_vector(self.phase_center, conj=True)
             
         if self.conjugate_data:
             self._print("conjugating data")
@@ -199,7 +226,7 @@ class RadioArray(ephem.Observer):
             self.gsm.date = self.date
             self.gsm.generate(self.f[f_idx] / 1e6)
 
-    def _generate_weight_grid(self, n_pix):
+    def _generate_weight_grid(self, n_pix: int):
         """ Generate a grid of pointing weights 
         
         Args:
@@ -229,14 +256,15 @@ class RadioArray(ephem.Observer):
         self.workspace['cgrid'] = c
         self.workspace['cgrid_conj'] = np.conj(c)
     
-    def plot_corr_matrix(self, log=True):
+    def plot_corr_matrix(self, log: bool=True):
+        """ Plot correlation matrix """
         data = np.log(np.abs(self.data)) if log else np.abs(self.data)
         plt.imshow(data, aspect='auto')
         plt.xlabel("Antenna P")
         plt.ylabel("Antenna Q")
         plt.colorbar()
     
-    def make_image(self, n_pix=128, update=True):
+    def make_image(self, n_pix: int=128, update: bool=True) -> np.array:
         """ Make an image out of a beam grid 
         
         Args:
@@ -252,13 +280,13 @@ class RadioArray(ephem.Observer):
         return np.abs(B)
     
     
-    def make_healpix(self, n_side=128, fov=np.pi/2, update=True, apply_mask=True):
+    def make_healpix(self, n_side: int=128, fov: float=np.pi/2, update: bool=True, apply_mask: bool=True) -> np.array:
         """ Generate a grid of beams on healpix coordinates 
         
         Args:
             n_side (int): Healpix NSIDE array size
             fov (float): Field of view in radians, within which to generate healpix beams. Defaults to pi/2.
-            phase_center (SkyCoord): SkyCoord of phase center. Will use zenith if not supplied.
+            apply_mask (bool): Apply mask for pixels that are below the horizon (default True)
             update (bool): Update pre-computed pixel and coordinate data. Defaults to True.
                            Setting to False gives a speedup, but requires that pre-computed coordinates are still accurate.
                            
@@ -316,7 +344,7 @@ class RadioArray(ephem.Observer):
         hpdata[pix0[~mask]] = B
         return hpdata
 
-    def generate_gsm(self):
+    def generate_gsm(self) -> np.array:
         """ Generate a GlobalSkyModel orthographic map of observed sky
         
         Returns:
