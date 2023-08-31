@@ -30,7 +30,14 @@ $$
 The *power beam* is the voltage beam after squaring and averaging in time. when averaged with time (denote with $\langle \rangle$ brackets) is:
 
 $$
-B  = \langle b(t)b^{H}(t) \rangle \ =\  \boldsymbol{w}_p \boldsymbol{V}_{pq} \boldsymbol{w}_q^H \ \equiv\  \boldsymbol{W}_{pq} \boldsymbol{V}_{pq}^H
+B  = \langle b(t)b^{H}(t) \rangle 
+$$
+
+and so
+
+$$
+B = w_p V_{pq} w_q^H 
+= W_{pq} V_{pq}^H
 $$
 
 Where $\boldsymbol{V}$ is the $(P\times P)$ visibility matrix, $\boldsymbol{w}$ is a $(1\times P)$ weights vector. Equivalently, $\boldsymbol{W}$ is a  $(P\times P)$ weights matrix. The subscripts $p$ and $q$ are row/column indices representing antenna pairs in the matrix. 
@@ -38,7 +45,7 @@ Where $\boldsymbol{V}$ is the $(P\times P)$ visibility matrix, $\boldsymbol{w}$ 
 In terms of computations, the most efficient way to form a power beam, with order $O(P)$, is first form a voltage beam, square the output, then average. Forming the visibility matrix is an $O(P^2)$ operation, so post-correlation beamforming is much more computationally expensive. The weight matrix, 
 
 $$
-\boldsymbol{W}_{pq} = \boldsymbol{w}_{p} \boldsymbol{w}_{q}^H
+W_{pq} = w_{p} w_{q}^H
 $$
 
 is conceptually useful (and useful for visualization), but comes at even more computational expense and memory requirements. 
@@ -51,19 +58,19 @@ However, post-correlation beamforming is incredibly flexible: a user can form as
 The post-correlation approach allows a compact summation notation to forming a grid of beams on the sky (coordinate subscripts $i$ and $j$), across frequency channels (subscript $\nu$):
 
 $$
-B_{i j \nu} = W^{p q}_{i j \nu} \, V_{p q \nu}
+B_{i j \nu} = W_{i j \nu}^{p q}  V_{p q \nu}
 $$
 
 Summation here is implied over all indices that appear in an upper and lower index. So, we sum across indexes $p$ and $q$ (summation indices), and output an N-dimensional matrix with indices $(i, j, \nu)$. In slightly-less compact, but more efficient form:
 
 $$
-B_{i j \nu} = w_{i j p \nu} \, V^{p q}_{\nu} (w^H)_{i j q \nu} (1)
+B_{i j \nu} = w_{i j \nu}^{p}  V_{p q \nu} (w^H)_{i j \nu}^{q} 
 $$
 
 The visibility matrix can itself be written in summation notation as
 
 $$
-V_{p q} = v^{t}_{p} (v^H)_{q t} 
+V_{p q} = v_{p}^{t} (v^H)_{q t} 
 $$
 
 where $t$ is summation over time step (instead of using $\langle \rangle$ brackets).
