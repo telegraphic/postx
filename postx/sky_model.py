@@ -4,77 +4,71 @@ Simple sky model class for ephemeris using pyephem
 import ephem
 import numpy as np
 
+from astropy.coordinates import SkyCoord, get_body, get_sun
+from .ant_array import RadioArray
 
-def make_source(name, ra: str, dec: str, flux: float=1.0, epoch: int=2000):
-    """ Create a pyEphem FixedBody radio source
+class RadioSource(SkyCoord):
+    """ A SkyCoordinate with a magnitude """
+    def __init__(self, *args, mag=1.0, unit=None, **kwargs):
+        if unit is None:
+            unit=('hourangle', 'degree')
+        super().__init__(*args, unit=unit, **kwargs)
+        self.mag = mag
+
+def generate_skycat(observer: RadioArray):
+    """ Generate a SkyModel for a given observer with major radio sources
+    
     Args:
-        name (str):   Name of source, e.g. CasA
-        ra (str):     hh:mm:ss right ascension, e.g. 23:23:26
-        dec (str):    dd:mm:ss declination e.g. 58:48:22.21
-        flux (float): flux brightness in Jy
-        epoch (int):  Defaults to J2000, i.e. 2000
+        observer (AntArray / ephem.Observer): Observatory instance
+    
     Returns:
-        body (pyephem.FixedBody): Source as a pyephem fixed body
+        skycat (SkyModel): A sky catalog with the A-team sources 
     """
-    line = "%s,f,%s,%s,%s,%d"%(name,ra,dec,flux,epoch)
-    body = ephem.readdb(line)
-    return body
+    skycat = {
+        'Virgo_A':     RadioSource('12h 30m 49s',    '+12:23:28',    ),
+        'Hydra_A':     RadioSource('09h 18m 5.6s',   '-12:5:44.0',   ),
+        'Centaurus_A': RadioSource('13h 25m 27.6s',  '−43:01:09',    ),
+        'Pictor_A':    RadioSource('05h 19m 49.72s', '−45:46:43.85', ),
+        'Hercules_A':  RadioSource('16h 51m 08.15',  '+04:59:33.32', ),
+        'Fornax_A':    RadioSource('03h 22m 41.7',   '−37:12:30',    ),
+    }
+    skycat.update(generate_skycat_solarsys(observer))
+    return skycat
 
+def generate_skycat_solarsys(observer: RadioArray):
+    """ Generate Sun + Moon for observer """
+    sun_gcrs  = get_body('sun', observer.workspace['t'])
+    moon_gcrs = get_body('moon', observer.workspace['t'])
+    skycat = {
+        'Sun': RadioSource(sun_gcrs.ra, sun_gcrs.dec, mag=1.0),
+        'Moon': RadioSource(moon_gcrs.ra, moon_gcrs.dec, mag=1.0),
+    }
+    return skycat
 
-class SkyModel(object):
-    """ Simple sky model class """
-    def __init__(self, sources=[], date=None):
-        self.sources = []
-        self.read_sourcelist(sources)
-        self.date    = date
+def sun_model(aa, t_idx=0) -> np.array:
+    """ Generate sun flux model at given frequencies.
 
-    def __repr__(self):
-        N = len(self.sources)
-        #ret = f"<SkyModel with {N} sources> \n"
-        ret = "<SkyModel with {0} sources> \n".format(N)
-        ret += str(self.sources)
-        return ret
+    Flux model values taken from Table 2 of Macario et al (2022).
+    A 5th order polynomial is used to interpolate between frequencies.
 
-    def __str__(self):
-        return self.__repr__()
+    Args:
+        aa (RadioArray): RadioArray to use for ephemeris / freq setup
+        t_idx (int): timestep to use
 
-    def add_source(self, src: ephem.FixedBody):
-        """ Add new source to sky model
-        Args:
-            src (ephem.FixedBody): Sky source to add
-        """
-        self.sources.append(src)
+    Returns:
+        S (RadioSource): Model flux, in Jy
 
-    def read_sourcelist(self, srclist: list):
-        """ Read a list of sources, convert to FixedBody objects
-        Args:
-            srclist (list): A list of sources, each entry a string:
-                           [name, ra, dec, flux]
-        """
-        for src in srclist:
-            sobj = make_source(*src)
-            self.add_source(sobj)
+    Citation:
+        Characterization of the SKA1-Low prototype station Aperture Array Verification System 2 
+        Macario et al (2022) 
+        JATIS, 8, 011014. doi:10.1117/1.JATIS.8.1.011014 
+        https://ui.adsabs.harvard.edu/abs/2022JATIS...8a1014M/abstract
+    """
+    f_i = (50, 100, 150, 200, 300)        # Frequency in MHz
+    α_i = (2.15, 1.86, 1.61, 1.50, 1.31)  # Spectral index 
+    S_i = (5400, 24000, 5100, 81000, 149000)    # Flux in Jy
+    
+    p_S = np.poly1d(np.polyfit(f_i, S_i, 2))
+    sun = RadioSource(get_sun(aa.workspace['t']), mag=p_S(aa.workspace['f'].to('MHz').value))
 
-    def compute_ephemeris(self, observatory: ephem.Observer):
-        """ Compute RA/DEC for all sources for given observatory
-        Args:
-            observatory (AntArray): pyephem Observer, or AntArray
-        """
-        self.date = observatory.date
-        for ii in range(len(self.sources)):
-            self.sources[ii].compute(observatory)
-
-    def report(self):
-        """ Report RA/DEC locations and alt/az """
-        print("Ephemeris Date: {0}".format(self.date))
-        print("SRC          RA           DEC        ALT          AZ")
-        for src in self.sources:
-            print("{0:12} {1}  {2}  {3}  {4}".format(src.name, src.ra, src.dec, src.alt, src.az))
-
-    def getaltaz(self):
-        """ Return alt/az for the first source in degrees"""
-        return self.sources[0].alt*180/np.pi, self.sources[0].az*180/np.pi
-
-
-def make_sky_model(sources, date=None):
-    return SkyModel(sources, date)
+    return sun

@@ -1,45 +1,12 @@
 import numpy as np
 import pylab as plt
-from .ant_array import RadioArray
-from astropy.time import Time
-import ephem
-import h5py
 from astropy.time import Time
 from astropy.coordinates import SkyCoord
 from astropy.wcs import WCS
+import healpy as hp
 
-def generate_skycat(observer: ephem.Observer):
-    """ Generate a SkyModel for a given observer with major radio sources
-    
-    Args:
-        observer (AntArray / ephem.Observer): Observatory instance
-    
-    Returns:
-        skycat (SkyModel): A sky catalog with the A-team sources 
-    """
-    skycat = {
-        'Virgo_A': SkyCoord('12h 30m 49s', '+12:23:28', unit=('hourangle', 'degree')),
-        'Hydra_A': SkyCoord('09h 18m 5.6s', '-12:5:44.0',  unit=('hourangle', 'degree')),
-        'Centaurus_A':  SkyCoord('13h 25m 27.6s', '−43:01:09', unit=('hourangle', 'degree')),
-        'Pictor_A': SkyCoord('05h 19m 49.721s', '−45:46:43.85', unit=('hourangle', 'degree')),
-        'Hercules_A': SkyCoord('16h 51m 08.15', '+04:59:33.32', unit=('hourangle', 'degree')),
-        'Fornax_A': SkyCoord('03h 22m 41.7', '−37:12:30', unit=('hourangle', 'degree')),
-
-    }
-    skycat.update(generate_skycat_solarsys(observer))
-    return skycat
-
-def generate_skycat_solarsys(observer):
-    """ Generate Sun + Moon for observer """
-    sun  = ephem.Sun()
-    moon = ephem.Moon()
-    sun.compute(observer)
-    moon.compute(observer) 
-    skycat = {
-        'Sun': SkyCoord(sun.ra, sun.dec, unit=('rad', 'rad')),
-        'Moon':  SkyCoord(moon.ra, moon.dec, unit=('rad', 'rad'))
-    }
-    return skycat
+from .ant_array import RadioArray
+from .sky_model import generate_skycat_solarsys
 
 class AllSkyViewer(object):
     """ An all-sky imager based on matplotlib imshow with WCS support 
@@ -48,25 +15,21 @@ class AllSkyViewer(object):
         update() - updates WCS information
         get_pixel() - get pixel information
     """
-    def __init__(self, observer=None, ts=None, f_mhz=None, n_pix=128):
+    def __init__(self, observer: RadioArray=None, skycat: dict=None, ts: Time=None, f_mhz: float=None, n_pix: int=128):
         self.observer = observer
-        self.wcsd     = None
-        self.skycat = {}
-        
+        self.skycat = skycat if skycat is not None else {}
+    
         self.name = observer.name if hasattr(observer, 'name') else 'allsky'
 
         self.ts     = ts
         self.f_mhz  = f_mhz
         self.n_pix  = n_pix
-        
-        # Internal indexes 
-        self._f_idx   = 0   # Frequency axis 
-        self._p_idx   = 0   # pol axis
+        self._update_wcs()
+
     
     def _update_wcs(self):
-        
-        self.observer.date = self.ts.datetime
-        zen_ra, zen_dec = self.observer.radec_of(0, np.pi/2)
+        """ Update World Coordinate System (WCS) information """
+        zen_sc = self.observer.get_zenith()
         
         self.wcsd = {
                  'SIMPLE': 'T',
@@ -77,42 +40,33 @@ class AllSkyViewer(object):
                  'CTYPE2': 'DEC--SIN',
                  'CRPIX1': self.n_pix // 2 + 1,
                  'CRPIX2': self.n_pix // 2 + 1,
-                 'CRVAL1': np.rad2deg(zen_ra),
-                 'CRVAL2': np.rad2deg(zen_dec),
+                 'CRVAL1': zen_sc.icrs.ra.to('deg').value,
+                 'CRVAL2': zen_sc.icrs.dec.to('deg').value,
                  'CDELT1': -360/np.pi / self.n_pix,
                  'CDELT2': 360/np.pi / self.n_pix  
             }
         
-        for src in self.skycat.keys():
-            if src in ('Sun', 'Moon'):
-                self.skycat[src] = generate_skycat_solarsys(self.observer)[src]
         self.wcs = WCS(self.wcsd)
-    
-    def update(self, ts: Time=None, n_pix: int=None, f_mhz: float=None):
-        """ Update WCS information on timestamp or other change 
-        
-        Args:
-            ts (astropy.Time): New timestamp to use
-            n_pix (int): Change number of pixels in image
-            f_mhz (int): Change observing frequency
-        """
-        if ts is not None:
-            self.ts = ts
-        if n_pix is not None:
-            self.n_pix = n_pix
-        if f_mhz is not None:
-            self.f_mhz = f_mhz
+
+    def _update_skycat(self):
+        """ Update skycat with solar system objects """
+        # Update Sun/Moon position (if needed)
+        sm = generate_skycat_solarsys(self.observer)
+        for key in sm.keys():
+            if key in self.skycat.keys():
+                self.skycat[key] = sm[key]
+
+    def update(self):
+        """ Update WCS information on timestamp or other change """
         self._update_wcs()
+        self._update_skycat()
     
-    def get_pixel(self, src: SkyCoord, f_idx: int=None) -> tuple:
+    def get_pixel(self, src: SkyCoord) -> tuple:
         """ Return the pixel index for a given SkyCoord 
         
         Args:
             src (SkyCoord): sky coordinate of interest
-            f_idx (int): Frequency index. TODO: remember why I added this arg? Potentially remove.
         """
-        if f_idx is not None:
-            self._f_idx = f_idx
         
         self._update_wcs()
         x, y = self.wcs.world_to_pixel(src)
@@ -152,18 +106,27 @@ class AllSkyViewer(object):
             **kwargs: These are passed on to imshow()
 
         """
+        if data is None:
+            data = self.observer.make_image(self.n_pix, update=True)
+
+        if data.shape[0] != self.n_pix:
+            self.n_pix = data.shape[0]
+            self.update()
+
         # Update WCS and then create imshow
         self._update_wcs()
         if subplot_id is not None:
             plt.subplot(*subplot_id, projection=self.wcs)
         else:
             plt.subplot(projection=self.wcs)
-        plt.imshow(sfunc(data), **kwargs)
+        im = plt.imshow(sfunc(data), **kwargs)
         
         # Create title
         if title is None:
-            lst_str = str(self.observer.sidereal_time())
-            title = f'{self.name}:  {self.ts.iso}  \n LST: {lst_str}  |  freq: {self.f_mhz:.2f} MHz'
+            ts = self.observer.workspace['t']
+            f  = self.observer.workspace['f']
+            lst_str = str(ts.sidereal_time('apparent'))
+            title = f'{self.name}:  {ts.iso}  \n LST: {lst_str}  |  freq: {f.to("MHz").value:.2f} MHz'
         plt.title(title)
         
         # Overlay a grid onto the imshow
@@ -180,8 +143,23 @@ class AllSkyViewer(object):
         
         # Turn on colorbar if requested
         if colorbar is True:
-            plt.colorbar(orientation='horizontal')
+            plt.colorbar(im, orientation='horizontal')
             
         #plt.axis('off')
         if return_data:
             return data
+    
+    def mollview(self, hmap: np.array=None, sfunc=np.abs, n_side=64, fov=np.pi/2, apply_mask=True, title=None, **kwargs):
+        """ Healpix view """
+        if hmap is None:
+            hmap = self.observer.make_healpix(n_side=n_side, fov=fov, apply_mask=apply_mask)
+
+        # Create title
+        if title is None:
+            ts = self.observer.workspace['t']
+            f  = self.observer.workspace['f']
+            lst_str = str(ts.sidereal_time('apparent'))
+            title = f'{self.name}:  {ts.iso} | LST: {lst_str}  |  freq: {f.to("MHz").value:.3f} MHz'
+
+        hp.mollview(sfunc(hmap), coord='G', title=title, **kwargs)
+        hp.graticule(color='white')
