@@ -138,3 +138,22 @@ def generate_lmn_grid(n_pix: int, abs_max: int=1, nan_below_horizon: bool=True):
     else:
         lmn[:, :, 2] = 0
     return lmn
+
+def gaincal_vec_to_matrix(gc: np.array) -> np.array:
+    """ Create a gain calibration matrix out of 4-pol vector
+
+    Args:
+        gc (np.array): Per-antenna gain calibration solutions.
+                       Shape (N_ant, N_pol=2) dtype complex
+
+    Returns:
+        cal_mat (np.array): Per-visibility gain calibration solutions,
+                            Shape (N_ant, N_ant, N_pol=4)
+    """
+    cal_mat = np.zeros((gc.shape[0], gc.shape[0], 4), dtype='complex64')
+
+    cal_mat[..., 0] = np.outer(gc[..., 0], gc[..., 0])
+    cal_mat[..., 1] = np.outer(gc[..., 0], gc[..., 1])
+    cal_mat[..., 2] = np.outer(gc[..., 1], gc[..., 0])
+    cal_mat[..., 3] = np.outer(gc[..., 1], gc[..., 1])
+    return cal_mat

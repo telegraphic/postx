@@ -1,4 +1,5 @@
 from postx.aperture_array import ApertureArray
+from postx.coord_utils import gaincal_vec_to_matrix
 import numpy as np
 
 from astropy.constants import c
@@ -66,8 +67,8 @@ def generate_aperture_image(beam_corr: np.array, lm_matrix: np.array, sigma: flo
     return aperture_image
 
 
-def jishnu_cal(aa: ApertureArray, cal_src: SkyCoord,
-               abs_max: int=2, aperture_padding: float=3, NFFT: int=1025,
+def jishnu_selfholo(aa: ApertureArray, cal_src: SkyCoord,
+               abs_max: int=4, aperture_padding: float=3, NFFT: int=1025,
                min_baseline_len=None, gc=None,
                bad_antenna_thr: float=10) -> dict:
     """ Calibrate aperture array data using self-holography
@@ -159,15 +160,6 @@ def jishnu_cal(aa: ApertureArray, cal_src: SkyCoord,
         'bad_antenna_thr': bad_antenna_thr,
     }
 
-    # Run find_bad_antennas before and after gaincal
-    # (This flags any antennas with silly gain solutions)
-    if aa._in_workspace('cal'):
-        print("reusing existing bad antenna flags")
-        cal['bad_antennas'] = aa.workspace['cal']['bad_antennas']
-
-    cal = compute_gaincal(aa, cal)
-    cal = find_bad_antennas(aa, cal, bad_antenna_thr)
-
     return cal
 
 
@@ -247,37 +239,198 @@ def find_bad_antennas(aa: ApertureArray, cal: dict, power_thr_db: float=10) -> d
     return cal
 
 
-def compute_gaincal(aa: ApertureArray, cal: dict) -> np.array:
-    """ Compute gain calibration
+def meas_corr_to_phasecal(mc: np.array) -> np.array:
+    """ Compute phase calibration coefficients from meas_corr
 
     Args:
-        aa (ApertureArray): Aperture Array to use
-        cal (dict): Calibration dictionary from jishnu_cal
-
-    Return:
-        gaincal (np.array): Numpy array of gain calibrations
+        meas_corr (np.array): Measured correlations between reference beam.
+                              and each antenna.
+                              Shape (N_ant, N_pol=2), dtype complex.
+    Returns:
+        pc (np.array): Phase calibration solutions.
+                       Shape (N_ant, N_pol=2), dtype complex
     """
-    ant_power_x = np.abs(cal['meas_corr'])[..., 0]
-    ant_power_y = np.abs(cal['meas_corr'])[..., 3]
-    p_med_x = np.median(db(ant_power_x)[ant_power_x > 0])
-    p_med_y = np.median(db(ant_power_y)[ant_power_y > 0])
+    mc_xy = mc[..., [0, 3]]
 
-    ant_power_lin_x = 10**((db(ant_power_x) - p_med_x)/10)
-    ant_power_lin_y = 10**((db(ant_power_y) - p_med_y)/10)
-    cal_gains = 1 / np.row_stack((ant_power_lin_x, ant_power_lin_y)).T
+    # Gain Calibration
+    gc = 1 / np.abs(mc_xy)
+    gc = np.ma.array(gc, mask=gc > np.median(gc) * 10)
+    gc = np.ma.array(gc, mask=gc > np.median(gc.compressed()) * 10)
 
-    cal_phs = np.angle(np.conj(cal['meas_corr']))[..., [0,3]]
+    # Phase calibration
+    phs_ang = np.ma.array(np.angle(np.conj(mc_xy)), mask=gc.mask)
+    phs_ang -= np.median(phs_ang)
+    pc = np.exp(1j * phs_ang)
+    pc[gc.mask] = 0
+    pc.mask = gc.mask
 
-    cal['gaincal']  = cal_gains * np.exp(1j * cal_phs)
-    return cal
+    return pc
 
+
+def jishnu_phasecal(aa: ApertureArray, cal_src: dict,
+                    n_iter_max: int=50, target_phs_std: float=1.0):
+    """ Iteratively apply Jishnu Cal phase calibration
+
+    Args:
+        aa (ApertureArray):
+        cal_src (SkyCoord):
+        n_iter_max (int): Maximum number of iterations. Default 50
+        target_phs_std (float): Target phase STDEV (in deg) at which to stop iterating.
+
+    Returns:
+        cc_dict (dict): Phase calibration solution and runtime info, in dictionary with keys:
+                        'phs_cal': complex-valued np.array of phase corrections.
+                                   Shape: (N_ant, N_pol=2), complex data.
+                        'n_iter': Number of iterations before break point reached.
+                        'phs_std': np.array of STD reached at each iteration.
+                                   Shape (N_iter), dtype float.
+    """
+    # Compute the phase vector required to phase up to the cal source
+    pv_src = aa.generate_phase_vector(cal_src, coplanar=True)
+
+    # Generate visibility matrix from aa
+    V = aa.generate_vis_matrix()
+
+    # Now, we loop over n_iter, until the STD of phase stops decreasing
+    phs_iter_list = np.zeros(n_iter_max)
+    for ii in range(n_iter_max):
+        if ii == 0:
+            meas_corr_src = np.einsum('i,ilp,l->ip', pv_src[0], V,
+                                  np.conj(pv_src[0]), optimize='optimal')
+            cc    = meas_corr_to_phasecal(meas_corr_src)
+
+            cc_mat = gaincal_vec_to_matrix(cc)
+            phs_std = np.std(np.angle(cc))
+        else:
+            meas_corr_iter = np.einsum('i,ilp,l->ip', pv_src[0], V * cc_mat,
+                                       np.conj(pv_src[0]), optimize='optimal')
+            cc_iter     = meas_corr_to_phasecal(meas_corr_iter)
+
+            phs_std_iter = np.std(np.angle(cc_iter))
+            if phs_std_iter >= phs_std:
+                print(f"Iter {ii-1}: Iteration phase std minima reached, breaking")
+                break
+            elif target_phs_std > np.rad2deg(phs_std_iter):
+                print(f"Iter {ii-1}: Target phase std reached, breaking")
+                break
+            else:
+                cc_iter_mat = gaincal_vec_to_matrix(cc_iter)
+                cc_mat *= cc_iter_mat
+
+                # Update phs_std comparator
+                phs_std = phs_std_iter
+        # Log phase stdev iteration to
+        phs_iter_list[ii] = phs_std
+    cc_dict = {
+        'phs_cal': cc_iter * cc,
+        'n_iter': ii,
+        'phs_std': phs_iter_list[:ii]
+    }
+    return cc_dict
+
+def plot_jishnu_phasecal_iterations(cc_dict: dict):
+    """ Plot the iterative phase corrections applied in phasecal
+
+    Args:
+        cc_dict (dict): Output dict from jishnu_phasecal
+    """
+    phs_std = np.rad2deg(cc_dict['phs_std'])
+    plt.loglog(phs_std)
+    plt.xlabel("Jishnu cal iteration")
+    plt.ylabel("Phase STD [deg]")
+    plt.ylim(phs_std[-1] / 1.5, phs_std[0])
 
 ####################
 ## PLOTTING ROUTINES
 ####################
 
-def plot_aperture_illumination(aa: ApertureArray, cal: dict, vmin: float=-40, phs_range: tuple=None):
-    """ Plot aperture illumnation function magnitude and phase
+def ant_xyz_to_image_idx(xyz_enu: np.array, cal: dict, as_int: bool=True) -> tuple:
+    """ Convert an ENU antenna location to a pixel location in image
+
+    Args:
+        xyz_enu (np.array): Antenna positions, in meters, ENU
+        cal (dict): Calibration dictionary from jishnu_cal
+
+    Returns:
+        an_x, an_y (np.array, np.array): Antenna locations in image. If as_int=True,
+                                         these are rounded to nearest integer.
+
+    Notes:
+        Not currently used in plotting, as setting plt.imshow(extent=) keyword
+        allows actual antenna positions in meters to be used.
+    """
+    NFFT = cal['aperture_img'].shape[0]
+    an_x = (NFFT/2) + (xyz_enu[:, 0])*NFFT/cal['aperture_size'] + 1
+    an_y = (NFFT/2) - (xyz_enu[:, 1])*NFFT/cal['aperture_size'] - 1
+    if as_int:
+        return np.round(an_x).astype('int32'), np.round(an_y).astype('int32')
+    else:
+        return an_x, an_y
+
+
+def plot_aperture(aa: ApertureArray, cal: dict, pol_idx: int=0, plot_type: str='mag',
+                  vmin: float=-40, phs_range: tuple=None, annotate: bool=False, s: int=None):
+    """ Plot aperture illumnation for given polarization index
+
+    Args:
+        aa (ApertureArray): Aperture Array to use
+        cal (dict): Calibration dictionary from jishnu_cal
+        pol_idx (int): Polarization axis index. Default 0 (X-pol)
+        plot_type (str): Either 'mag' for magnitude, or 'phs' for phase
+        vmin (float): sets vmin in dB for magnitude plot colorscale range (vmin, 0)
+                      Default value is -40 (-40 dB)
+        phs_range (tuple): Sets phase scale range. Two floats in degrees, e.g. (-90, 90).
+                           Default value is (-180, 180) degrees
+        annotate (bool): Set to True to overlay antenna identifiers/names
+        s (int): Sets circle size around antenna locations
+    """
+    bcorr = cal['beam_corr']
+    ap_ex = cal['aperture_size']
+    apim  = cal['aperture_img']
+
+    # Compute normalized magnitude
+    img_db = 10 * np.log10(np.abs(apim[..., pol_idx]))
+    img_db -= np.max(img_db)
+
+    # Mask out areas where magnitude is low, so phase plot is cleaner
+    img_phs = np.rad2deg(np.angle(apim[..., pol_idx]))
+    phs_mask = img_db < -20
+    img_phs = np.ma.array(img_phs, mask=phs_mask)
+
+    # Create colormap for phase data
+    phs_cmap = mpl.colormaps.get_cmap("viridis").copy()
+    phs_cmap.set_bad(color='black')
+
+    # set plotting limits, override if phs_range is set
+    phs_range = (-180, 180) if phs_range is None else phs_range
+    extent = [-ap_ex/2, ap_ex/2, ap_ex/2, -ap_ex/2]
+
+    if plot_type == 'mag':
+        plt.title(f"{aa.p[pol_idx]} Magnitude")
+        plt.imshow(img_db, cmap='inferno', vmin=vmin, extent=extent)
+        plt.colorbar(label="dB")
+    elif plot_type == 'phs':
+        plt.title(f"{aa.p[pol_idx]} Phase]")
+        plt.imshow(img_phs, cmap=phs_cmap, vmin=phs_range[0], vmax=phs_range[1], extent=extent)
+        plt.colorbar(label='deg')
+    else:
+        raise RuntimeError("Need to plot 'mag' or 'phs'")
+    plt.xlabel("E (m)")
+    plt.ylabel("N (m)")
+
+    if annotate:
+        ix, iy = aa.xyz_enu[:, 0], -aa.xyz_enu[:, 1]
+        ixy = np.column_stack((ix, iy))
+        for ii in range(aa.n_ant):
+            plt.annotate(text=aa.uvx.antennas.identifier[ii].values, xy=ixy[ii], color='white', size=8)
+
+        circle_size = s if s else cal['aperture_img'].shape[0] / np.sqrt(aa.n_ant)
+        plt.scatter(ix, iy, s=circle_size, facecolors='none', edgecolors='white', alpha=0.7)
+
+
+def plot_aperture_xy(aa: ApertureArray, cal: dict, vmin: float=-40,
+                               phs_range: tuple=None, annotate: bool=False, figsize: tuple=(10,8)):
+    """ Plot aperture illumnation function magnitude and phase, both polarizations
 
     Plots a 2x2 grid for aperture illumination image, showing magnitude and phase
     for X and Y polarizations.
@@ -289,46 +442,20 @@ def plot_aperture_illumination(aa: ApertureArray, cal: dict, vmin: float=-40, ph
                       Default value is -40 (-40 dB)
         phs_range (tuple): Sets phase scale range. Two floats in degrees, e.g. (-90, 90).
                            Default value is (-180, 180) degrees
+        annotate (bool): Set to True to overlay antenna identifiers/names
+        figsize (tuple): Size of figure, passed to plt.figure(figsize). Default (10, 8)
 
     """
-
-    bcorr = cal['beam_corr']
-    ap_ex = cal['aperture_size']
-    apim  = cal['aperture_img']
-
-    plt.figure(figsize=(10,8))
+    plt.figure(figsize=figsize)
     pidxs = [0, 3]
-    extent = [-ap_ex/2, ap_ex/2, ap_ex/2, -ap_ex/2]
     for ii in range(2):
         pidx = pidxs[ii]
-        img_db = 10 * np.log10(np.abs(apim[..., pidx]))
-        img_db -= np.max(img_db)
+
         plt.subplot(2,2,2*ii+1)
-        plt.title(f"{aa.p[pidx]} Magnitude")
-        plt.imshow(img_db, cmap='inferno', vmin=vmin, extent=extent)
-        plt.xlabel("E (m)")
-        plt.ylabel("N (m)")
-        plt.colorbar(label="dB")
-
-        img_phs = np.rad2deg(np.angle(apim[..., pidx]))
-
-        # Mask out areas where magnitude is low, so phase plot is cleaner
-        phs_mask = img_db < -20
-        img_phs = np.ma.array(img_phs, mask=phs_mask)
-
-        # Create colormap for phase data
-        phs_cmap = mpl.colormaps.get_cmap("viridis").copy()
-        phs_cmap.set_bad(color='black')
-        # set plotting limits, override if phs_range is set
-        phs_range = (-180, 180) if phs_range is None else phs_range
+        plot_aperture(aa, cal, pidx, 'mag', vmin=vmin, annotate=annotate)
 
         plt.subplot(2,2,2*ii+2)
-        plt.title(f"{aa.p[pidx]} Phase]")
-        plt.imshow(img_phs, cmap=phs_cmap, vmin=phs_range[0], vmax=phs_range[1], extent=extent)
-        plt.xlabel("E (m)")
-        plt.ylabel("N (m)")
-        plt.colorbar(label="deg")
+        plot_aperture(aa, cal, pidx, 'phs', vmin=vmin, annotate=annotate)
 
     plt.suptitle(f"{aa.name} station holography")
     plt.tight_layout()
-    plt.show()

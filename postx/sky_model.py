@@ -17,12 +17,12 @@ class RadioSource(SkyCoord):
 
 def generate_skycat(observer: RadioArray):
     """ Generate a SkyModel for a given observer with major radio sources
-    
+
     Args:
         observer (AntArray / ephem.Observer): Observatory instance
-    
+
     Returns:
-        skycat (SkyModel): A sky catalog with the A-team sources 
+        skycat (SkyModel): A sky catalog with the A-team sources
     """
     skycat = {
         'Virgo_A':     RadioSource('12h 30m 49s',    '+12:23:28',    ),
@@ -37,8 +37,8 @@ def generate_skycat(observer: RadioArray):
 
 def generate_skycat_solarsys(observer: RadioArray):
     """ Generate Sun + Moon for observer """
-    sun_gcrs  = get_body('sun', observer.workspace['t'])
-    moon_gcrs = get_body('moon', observer.workspace['t'])
+    sun_gcrs  = get_body('sun', observer._ws('t'))
+    moon_gcrs = get_body('moon', observer._ws('t'))
     skycat = {
         'Sun': RadioSource(sun_gcrs.ra, sun_gcrs.dec, mag=1.0),
         'Moon': RadioSource(moon_gcrs.ra, moon_gcrs.dec, mag=1.0),
@@ -59,15 +59,15 @@ def sun_model(aa, t_idx=0) -> np.array:
         S (RadioSource): Model flux, in Jy
 
     Citation:
-        Characterization of the SKA1-Low prototype station Aperture Array Verification System 2 
-        Macario et al (2022) 
-        JATIS, 8, 011014. doi:10.1117/1.JATIS.8.1.011014 
+        Characterization of the SKA1-Low prototype station Aperture Array Verification System 2
+        Macario et al (2022)
+        JATIS, 8, 011014. doi:10.1117/1.JATIS.8.1.011014
         https://ui.adsabs.harvard.edu/abs/2022JATIS...8a1014M/abstract
     """
     f_i = (50, 100, 150, 200, 300)        # Frequency in MHz
-    α_i = (2.15, 1.86, 1.61, 1.50, 1.31)  # Spectral index 
+    α_i = (2.15, 1.86, 1.61, 1.50, 1.31)  # Spectral index
     S_i = (5400, 24000, 5100, 81000, 149000)    # Flux in Jy
-    
+
     p_S = np.poly1d(np.polyfit(f_i, S_i, 2))
     sun = RadioSource(get_sun(aa.workspace['t']), mag=p_S(aa.workspace['f'].to('MHz').value))
 

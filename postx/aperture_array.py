@@ -13,7 +13,7 @@ import healpy as hp
 
 from aavs_uv.vis_utils import  vis_arr_to_matrix_4pol
 from aavs_uv.datamodel import UVX
-from .coord_utils import phase_vector, skycoord_to_lmn, generate_lmn_grid, sky2hpix, hpix2sky
+from .coord_utils import phase_vector, skycoord_to_lmn, generate_lmn_grid, sky2hpix, hpix2sky, gaincal_vec_to_matrix
 
 from astropy.constants import c
 SPEED_OF_LIGHT = c.value
@@ -55,6 +55,7 @@ class ApertureArray(object):
         self.xyz_ecef = uvx.antennas.ecef.data + xyz0
 
         self.n_ant = len(self.xyz_enu)
+        self.ant_names = uvx.antennas.identifier
 
         # Setup frequency, time, and phase centre
         self.f = Quantity(uvx.data.coords['frequency'].data, 'Hz')
@@ -71,6 +72,9 @@ class ApertureArray(object):
         self.workspace = {}
 
         self.bl_matrix = self._generate_bl_matrix()
+
+        # Healpix workspace
+        self._to_workspace('hpx', {})
 
     def _ws(self, key: str):
         """ Return value of current index for freq / pol / time or workspace entry
@@ -196,32 +200,9 @@ class ApertureArray(object):
 
         return pv_grid, lmn
 
-    def _gaincal_vec_to_matrix(self, gc):
-        cal_mat = np.zeros((self.n_ant, self.n_ant, 4), dtype='complex64')
-
-        cal_mat[..., 0] = np.outer(gc[..., 0], gc[..., 0])
-        cal_mat[..., 1] = np.outer(gc[..., 0], gc[..., 1])
-        cal_mat[..., 2] = np.outer(gc[..., 1], gc[..., 0])
-        cal_mat[..., 3] = np.outer(gc[..., 1], gc[..., 1])
-        return cal_mat
-
-
     def set_cal(self, cal):
-        cal_mat = self._gaincal_vec_to_matrix(cal['gaincal'])
-        self.workspace['cal'] = cal
-        self.workspace['cal']['gaincal_matrix'] = cal_mat
-
-    def update_cal(self, cal):
-        if self._in_workspace('gaincal'):
-            cal_mat = self._gaincal_vec_to_matrix(cal['gaincal'])
-            current_gaincal = self.workspace['cal']['gaincal']
-            current_gainmat = self.workspace['cal']['gaincal_matrix']
-            self.workspace['cal'] = cal
-            self.workspace['cal']['gaincal'] *= current_gaincal
-            self.workspace['cal']['gaincal_matrix'] *= current_gainmat
-
-        else:
-            self.set_cal(cal)
+        cal_mat = gaincal_vec_to_matrix(cal)
+        self.workspace['cal'] = {'gaincal': cal, 'gaincal_matrix': cal_mat}
 
     def generate_vis_matrix(self, t_idx=None, f_idx=None):
 
@@ -275,19 +256,19 @@ class ApertureArray(object):
         NSIDE = n_side
         NPIX  = hp.nside2npix(NSIDE)
 
-        ws = self.workspace
-        if ws['hpx'].get('n_side', 0) != NSIDE:
-            ws['hpx']['n_side'] = NSIDE
-            ws['hpx']['n_pix']  = NPIX
-            ws['hpx']['pix0']   = np.arange(NPIX)
-            ws['hpx']['sc']     = hpix2sky(NSIDE, ws['hpx']['pix0'])
+        ws = self._ws('hpx')
+        if ws.get('n_side', 0) != NSIDE:
+            ws['n_side'] = NSIDE
+            ws['n_pix']  = NPIX
+            ws['pix0']   = np.arange(NPIX)
+            ws['sc']     = hpix2sky(NSIDE, ws['pix0'])
 
-        if ws['hpx'].get('fov', 0) != fov:
-            ws['hpx']['fov'] = fov
+        if ws.get('fov', 0) != fov:
+            ws['fov'] = fov
 
-        NPIX = ws['hpx']['n_pix']
-        sc   = ws['hpx']['sc']         # SkyCoord coordinates array
-        pix0 = ws['hpx']['pix0']       # Pixel coordinate array
+        NPIX = ws['n_pix']
+        sc   = ws['sc']         # SkyCoord coordinates array
+        pix0 = ws['pix0']       # Pixel coordinate array
 
         if update:
             sc_zen = self.get_zenith()
@@ -305,23 +286,29 @@ class ApertureArray(object):
 
             lmn = skycoord_to_lmn(sc[pix_visible], sc_zen)
             t_g = np.einsum('id,pd', lmn, self.xyz_enu, optimize=True) / SPEED_OF_LIGHT
-            c = phase_vector(t_g, ws['f'].to('Hz').value)
+            c = phase_vector(t_g, self._ws('f').to('Hz').value)
 
             # Apply n factor to account for projection (Carozzi and Woan 2009 )
             c = np.einsum('i,ip->ip', lmn[:, 2], c, optimize=True)
 
-            ws['hpx']['mask'] = mask
-            ws['hpx']['lmn'] = lmn
-            ws['hpx']['phs_vector'] = c * ws['c0']    # Correct for vis phase center (i.e.the Sun)
+            ws['mask'] = mask
+            ws['lmn'] = lmn
+            ws['phs_vector'] = c       # Correct for vis phase center (i.e.the Sun)
 
+        mask = ws['mask']       # Horizon mask
+        c = ws['phs_vector']    # Pointing phase vector
 
-        mask = ws['hpx']['mask']       # Horizon mask
-        c = ws['hpx']['phs_vector']    # Pointing phase vector
+        V = self.generate_vis_matrix()
 
-        B = np.abs(np.einsum('ip,pq,iq->i', c, ws['data'], np.conj(c), optimize=True))
+        # For some reason, breaking into four pols is signifcantly quicker
+        # Than adding 'x' as pol axis and using one-liner pij,pqx,qij->ijx
+        B = np.zeros(shape=(ws['lmn'].shape[0], 4), dtype='float32')
+        B[..., 0] = np.abs(np.einsum('ip,pq,iq->i', c, V[..., 0], np.conj(c), optimize=True))
+        B[..., 1] = np.abs(np.einsum('ip,pq,iq->i', c, V[..., 1], np.conj(c), optimize=True))
+        B[..., 2] = np.abs(np.einsum('ip,pq,iq->i', c, V[..., 2], np.conj(c), optimize=True))
+        B[..., 3] = np.abs(np.einsum('ip,pq,iq->i', c, V[..., 3], np.conj(c), optimize=True))
 
-
-        hpdata = np.zeros_like(pix0)
-
+        # Create a hpx array with shape (NPIX, 4) and insert above-horizon data
+        hpdata = np.zeros((ws['pix0'].shape[0], 4), dtype='float32')
         hpdata[pix0[~mask]] = B
         return hpdata
